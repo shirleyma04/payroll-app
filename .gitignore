@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+
+exports/
+database/
+
+.env
+.DS_Store
+
+dist/
+build/
