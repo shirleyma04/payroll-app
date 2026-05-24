@@ -1,7 +1,14 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
+import threading
+import sys
+import os
 import re
+
+# ============= PAYROLL PROCESSOR CODE (embedded) =============
 
 ROLE_PERCENTAGES = {
     "Busser": 0.42,
@@ -12,35 +19,21 @@ ROLE_PERCENTAGES = {
     "Bartender": 0.025
 }
 
-# -----------------------------
-# UTILITY FUNCTIONS
-# -----------------------------
-
 def clean_money(value):
-    """Convert currency strings to float values"""
     if pd.isna(value):
         return 0.0
-    
     value = str(value)
-    value = value.replace('$', '')
-    value = value.replace(',', '')
-    value = value.replace('%', '')
-    value = value.strip()
-    
+    value = value.replace('$', '').replace(',', '').replace('%', '').strip()
     try:
         return float(value)
     except:
         return 0.0
 
-
 def get_last_initial(name):
-    """Extract first name and last initial for matching across files"""
     if pd.isna(name):
         return ""
-    
     name = str(name).strip()
     parts = name.split()
-    
     if len(parts) >= 2:
         return f"{parts[0]} {parts[-1][0]}"
     elif len(parts) == 1:
@@ -48,47 +41,35 @@ def get_last_initial(name):
     else:
         return ""
 
-
 def normalize_name_for_matching(df, name_column='Name'):
-    """Create a normalized name column for merging"""
     df['Name_Match'] = df[name_column].apply(get_last_initial)
     return df
 
-
 def get_base_pay_only(role):
-    """Determine if role gets only base hourly pay (no tips)"""
     role_lower = str(role).lower()
     base_only_roles = ['server trainee', 'host trainee', 'busser trainee', 
                        'dish washer', 'prep cook']
-    
     for base_role in base_only_roles:
         if base_role in role_lower:
             return True
     return False
 
 def calculate_breaks_from_timecard(timecard_df):
-    # Clean column names
     timecard_df.columns = [c.strip() for c in timecard_df.columns]
-    
-    # Ensure required columns exist
     required_cols = ['Name', 'Role', 'Clock In', 'Clock Out']
     for col in required_cols:
         if col not in timecard_df.columns:
             raise Exception(f'Missing required column in Time Card file: {col}')
     
-    # Convert time columns to datetime for calculations
     timecard_df['Clock In'] = pd.to_datetime(timecard_df['Clock In'], format='%I:%M %p', errors='coerce')
     timecard_df['Clock Out'] = pd.to_datetime(timecard_df['Clock Out'], format='%I:%M %p', errors='coerce')
     
-    # Ensure Total Hours Worked column exists
     if 'Total Hours Worked (h)' not in timecard_df.columns:
         timecard_df['Total Hours Worked (h)'] = (timecard_df['Clock Out'] - timecard_df['Clock In']).dt.total_seconds() / 3600
         timecard_df['Total Hours Worked (h)'] = timecard_df['Total Hours Worked (h)'].fillna(0)
     
-    # Check for Unpaid Break column
     has_unpaid_break = 'Unpaid Break (h)' in timecard_df.columns
     
-    # Initialize break tracking columns
     timecard_df['Break Minutes'] = 0.0
     timecard_df['Break Count'] = 0
     timecard_df['Break Hours'] = 0.0
@@ -101,13 +82,11 @@ def calculate_breaks_from_timecard(timecard_df):
         if pd.isna(clock_in) or pd.isna(clock_out):
             continue
         
-        # Check if Unpaid Break column has a non-zero value
         if has_unpaid_break and pd.notna(row.get('Unpaid Break (h)')) and row['Unpaid Break (h)'] != '':
             try:
                 break_hours = float(row['Unpaid Break (h)'])
                 if break_hours > 0:
-                    break_minutes = break_hours * 60
-                    timecard_df.at[idx, 'Break Minutes'] = break_minutes
+                    timecard_df.at[idx, 'Break Minutes'] = break_hours * 60
                     timecard_df.at[idx, 'Break Count'] = 1
                     timecard_df.at[idx, 'Break Hours'] = break_hours
                     timecard_df.at[idx, 'Break Already Subtracted'] = True
@@ -115,10 +94,7 @@ def calculate_breaks_from_timecard(timecard_df):
             except:
                 pass
         
-        # No unpaid break recorded - calculate break time to subtract
         clock_in_hour = clock_in.hour + clock_in.minute / 60
-        
-        # Check if working a double shift (clocked in before 1pm AND out after 9pm)
         if clock_in_hour < 13 and clock_out.hour >= 21:
             timecard_df.at[idx, 'Break Minutes'] = 40.0
             timecard_df.at[idx, 'Break Count'] = 2
@@ -130,20 +106,17 @@ def calculate_breaks_from_timecard(timecard_df):
         
         timecard_df.at[idx, 'Break Already Subtracted'] = False
     
-    # Calculate adjusted hours
     timecard_df['Adjusted Hours'] = timecard_df.apply(
         lambda row: row['Total Hours Worked (h)'] if row['Break Already Subtracted']
         else max(0.0, float(row['Total Hours Worked (h)']) - float(row['Break Hours'])),
         axis=1
     )
     
-    # Convert columns to proper types before aggregation
     timecard_df['Total Hours Worked (h)'] = timecard_df['Total Hours Worked (h)'].astype(float)
     timecard_df['Break Count'] = timecard_df['Break Count'].astype(int)
     timecard_df['Break Hours'] = timecard_df['Break Hours'].astype(float)
     timecard_df['Adjusted Hours'] = timecard_df['Adjusted Hours'].astype(float)
     
-    # Aggregate by Name AND Role together
     timecard_agg = timecard_df.groupby(['Name', 'Role'], as_index=False).agg({
         'Total Hours Worked (h)': 'sum',
         'Break Count': 'sum',
@@ -151,65 +124,35 @@ def calculate_breaks_from_timecard(timecard_df):
         'Adjusted Hours': 'sum'
     })
     
-    # Rename columns
     timecard_agg.columns = ['Name', 'Role', 'Raw Hours', 'No. of Breaks', 'Total Break Time', 'Total Hours Worked']
-    
-    # Convert No. of Breaks to int
     timecard_agg['No. of Breaks'] = timecard_agg['No. of Breaks'].astype(int)
-    
-    # Round everything to 2 decimal places
     timecard_agg['Total Break Time'] = timecard_agg['Total Break Time'].round(2)
     timecard_agg['Total Hours Worked'] = timecard_agg['Total Hours Worked'].round(2)
     timecard_agg['Raw Hours'] = timecard_agg['Raw Hours'].round(2)
     
     return timecard_agg
 
-# -----------------------------
-# MAIN PAYROLL FUNCTION
-# -----------------------------
-
-def process_payroll(
-    productivity_file,
-    labor_file,
-    timecard_file,
-    percentages=None
-):
+def process_payroll(productivity_file, labor_file, timecard_file, percentages=None):
     if percentages is None:
         percentages = ROLE_PERCENTAGES
 
-    # ---------------------------------
-    # READ INPUT FILES
-    # ---------------------------------
     productivity_df = pd.read_csv(productivity_file, skiprows=1)
     
-    # Read time card file (required)
     if timecard_file.endswith('.xlsx'):
         timecard_df = pd.read_excel(timecard_file, skiprows=1)
     else:
         timecard_df = pd.read_csv(timecard_file, skiprows=1)
     
-    # Read labor file for hourly rates only
     if labor_file.endswith('.xlsx'):
         labor_df = pd.read_excel(labor_file, skiprows=1)
     else:
         labor_df = pd.read_csv(labor_file, skiprows=1)
 
-    # ---------------------------------
-    # CLEAN COLUMN NAMES
-    # ---------------------------------
     productivity_df.columns = [c.strip() for c in productivity_df.columns]
     labor_df.columns = [c.strip() for c in labor_df.columns]
     
-    labor_df.columns = (
-        labor_df.columns
-        .str.strip()
-        .str.replace(r"\s*\(.*?\)", "", regex=True)
-        .str.replace(r"\s*\(h\)", "", regex=True)
-    )
+    labor_df.columns = (labor_df.columns.str.strip().str.replace(r"\s*\(.*?\)", "", regex=True).str.replace(r"\s*\(h\)", "", regex=True))
 
-    # ---------------------------------
-    # VALIDATE REQUIRED COLUMNS
-    # ---------------------------------
     productivity_required = ['Name', 'Role', 'Gross Sales', 'Service Tips']
     labor_required = ['Name', 'Role', 'Hourly Rate']
     
@@ -221,9 +164,6 @@ def process_payroll(
         if col not in labor_df.columns:
             raise Exception(f'Missing column in Labor file: {col}')
 
-    # ---------------------------------
-    # CLEAN DATA VALUES
-    # ---------------------------------
     productivity_df['Gross Sales'] = productivity_df['Gross Sales'].apply(clean_money)
     if 'Net Sales' in productivity_df.columns:
         productivity_df['Net Sales'] = productivity_df['Net Sales'].apply(clean_money)
@@ -231,28 +171,17 @@ def process_payroll(
         productivity_df['Net Sales'] = productivity_df['Gross Sales']
     
     productivity_df['Service Tips'] = productivity_df['Service Tips'].apply(clean_money)
-    
     labor_df['Hourly Rate'] = labor_df['Hourly Rate'].apply(clean_money)
     
-    # ---------------------------------
-    # CALCULATE BREAKS FROM TIMECARD
-    # ---------------------------------
     timecard_agg = calculate_breaks_from_timecard(timecard_df)
-    
-    # Drop any duplicate (Name, Role) combinations
     timecard_agg = timecard_agg.drop_duplicates(subset=['Name', 'Role'], keep='first')
     
-    # ---------------------------------
-    # MERGE FILES USING NAME AND ROLE MATCHING
-    # ---------------------------------
-    # Create normalized name columns for matching
     timecard_agg = normalize_name_for_matching(timecard_agg, 'Name')
     productivity_df = normalize_name_for_matching(productivity_df, 'Name')
     labor_df = normalize_name_for_matching(labor_df, 'Name')
     
     timecard_agg['Original_Name'] = timecard_agg['Name']
     
-    # Merge productivity data into timecard
     merged = pd.merge(
         timecard_agg,
         productivity_df[['Name_Match', 'Role', 'Gross Sales', 'Net Sales', 'Service Tips']],
@@ -261,7 +190,6 @@ def process_payroll(
         suffixes=('', '_prod')
     )
     
-    # Merge hourly rate from labor file
     merged = pd.merge(
         merged,
         labor_df[['Name_Match', 'Role', 'Hourly Rate']],
@@ -270,25 +198,18 @@ def process_payroll(
         suffixes=('', '_labor')
     )
     
-    # Restore original name
     merged['Name'] = merged['Original_Name']
     
-    # Fill missing values
     merged['Gross Sales'] = merged['Gross Sales'].fillna(0)
     merged['Net Sales'] = merged['Net Sales'].fillna(0)
     merged['Service Tips'] = merged['Service Tips'].fillna(0)
     merged['Hourly Rate'] = merged['Hourly Rate'].fillna(0)
     
-    # Drop any duplicate rows
     merged = merged.drop_duplicates(subset=['Name', 'Role'], keep='first')
     
-    # Calculate Estimated Total Pay
     merged['Estimated Total Pay'] = merged['Total Hours Worked'] * merged['Hourly Rate']
     merged['Estimated Total Pay'] = merged['Estimated Total Pay'].round(2)
     
-    # ---------------------------------
-    # INITIALIZE CALCULATION COLUMNS
-    # ---------------------------------
     merged['Tip Out'] = 0.0
     merged['Gross Tips'] = 0.0
     merged['Merchant Fee'] = 0.0
@@ -298,24 +219,15 @@ def process_payroll(
     merged['Final Pay'] = 0.0
     merged['Effective Hourly Rate'] = 0.0
 
-    # ---------------------------------
-    # CALCULATE BASE PAY FOR NON-TIP ROLES
-    # ---------------------------------
     for idx, row in merged.iterrows():
         if get_base_pay_only(row['Role']):
             merged.at[idx, 'Final Pay'] = row['Estimated Total Pay']
             merged.at[idx, 'Effective Hourly Rate'] = row['Estimated Total Pay'] / row['Total Hours Worked'] if row['Total Hours Worked'] > 0 else 0
-
-            # Zero out tip-related fields only
             merged.at[idx, 'Tip Out'] = 0
             merged.at[idx, 'Service Tips'] = 0
             merged.at[idx, 'Merchant Fee'] = 0
 
-    # ---------------------------------
-    # CALCULATE TIP CONTRIBUTIONS FOR SERVERS
-    # ---------------------------------
-    server_mask = merged['Role'].str.contains('Server', case=False, na=False) & \
-                  ~merged['Role'].str.contains('Trainee', case=False, na=False)
+    server_mask = merged['Role'].str.contains('Server', case=False, na=False) & ~merged['Role'].str.contains('Trainee', case=False, na=False)
     
     merged.loc[server_mask, 'Tip Out'] = merged.loc[server_mask, 'Gross Sales'] * 0.07
     merged.loc[server_mask, 'Gross Tips'] = merged.loc[server_mask, 'Service Tips'] - merged.loc[server_mask, 'Tip Out']
@@ -327,9 +239,6 @@ def process_payroll(
     total_merchant_fee = merged['Merchant Fee'].sum()
     total_pool = total_tip_out - total_merchant_fee
 
-    # ---------------------------------
-    # DISTRIBUTE TIP POOL BY ROLE
-    # ---------------------------------
     role_pool_money = {role: total_pool * pct for role, pct in percentages.items()}
     
     role_hours = {}
@@ -357,9 +266,6 @@ def process_payroll(
         else:
             hourly_tip_rates[role] = 0
 
-    # ---------------------------------
-    # CALCULATE INDIVIDUAL TIP OUTS
-    # ---------------------------------
     for idx, row in merged.iterrows():
         if get_base_pay_only(row['Role']):
             continue
@@ -379,9 +285,6 @@ def process_payroll(
         elif 'bartender' in employee_role:
             merged.at[idx, 'Tip-Out Tips'] = hourly_tip_rates['Bartender'] * row['Total Hours Worked']
 
-    # ---------------------------------
-    # CALCULATE FINAL PAY
-    # ---------------------------------
     for idx, row in merged.iterrows():
         if get_base_pay_only(row['Role']):
             continue
@@ -402,9 +305,6 @@ def process_payroll(
         if row['Total Hours Worked'] > 0:
             merged.at[idx, 'Effective Hourly Rate'] = final_pay / row['Total Hours Worked']
 
-    # ---------------------------------
-    # ROUND NUMERIC VALUES
-    # ---------------------------------
     numeric_cols = ['Gross Sales', 'Net Sales', 'Service Tips', 'Tip Out', 'Gross Tips', 'Merchant Fee', 
                     'Total Tips', 'Subtotal', 'Tip-Out Tips', 'Final Pay', 'Effective Hourly Rate',
                     'Raw Hours', 'No. of Breaks', 'Total Break Time']
@@ -412,109 +312,67 @@ def process_payroll(
         if col in merged.columns:
             merged[col] = merged[col].round(2)
 
-    # ---------------------------------
-    # FILTER AND SORT OUTPUT COLUMNS
-    # ---------------------------------
     output_columns = [
-        'Name',
-        'Role',
-        'Hourly Rate',
-        'Raw Hours',
-        'No. of Breaks',
-        'Total Break Time',
-        'Total Hours Worked',
-        'Estimated Total Pay',
-        'Gross Sales',
-        'Net Sales',
-        'Service Tips',
-        'Tip Out',
-        'Tip-Out Tips',
-        'Merchant Fee',
-        'Final Pay',
-        'Effective Hourly Rate'
+        'Name', 'Role', 'Hourly Rate', 'Raw Hours', 'No. of Breaks', 'Total Break Time',
+        'Total Hours Worked', 'Estimated Total Pay', 'Gross Sales', 'Net Sales', 'Service Tips',
+        'Tip Out', 'Tip-Out Tips', 'Merchant Fee', 'Final Pay', 'Effective Hourly Rate'
     ]
     
     output_columns = [col for col in output_columns if col in merged.columns]
     
-    # Create final output with sorted roles and row spaces
     role_order = [
-        'Server',
-        'Bartender',
-        'Busser',
-        'Food-Bar Runner',
-        'Food Runner',
-        'Cashier/Host',
-        'Food-Bar Prep',
-        'Prep Cook',
-        'Dish Washer',
-        'Host Trainee',
-        'Server Trainee',
-        'Busser Trainee',
-        'Manager'
+        'Server', 'Bartender', 'Busser', 'Food-Bar Runner', 'Food Runner', 'Cashier/Host',
+        'Food-Bar Prep', 'Prep Cook', 'Dish Washer', 'Host Trainee', 'Server Trainee', 'Busser Trainee', 'Manager'
     ]
     
     final_rows = []
     
     for role in role_order:
-        # Match role (case insensitive)
         role_mask = merged['Role'].str.lower() == role.lower()
         role_data = merged[role_mask].copy()
         
         if not role_data.empty:
-            # Sort by name within role
             role_data = role_data.sort_values('Name')
             final_rows.append(role_data[output_columns])
-            # Add empty row as spacer
             spacer = pd.DataFrame([[''] * len(output_columns)], columns=output_columns)
             final_rows.append(spacer)
     
-    # Combine all sections
     if final_rows:
         final_output = pd.concat(final_rows, ignore_index=True)
     else:
         final_output = pd.DataFrame(columns=output_columns)
     
-    # Remove last spacer row if it exists
     if len(final_output) > 0 and final_output.iloc[-1].isna().all():
         final_output = final_output.iloc[:-1]
 
-    # ---------------------------------
-    # ADD TOTAL ROWS (SERVER TOTAL + GRAND TOTAL ONLY) - CLEAN VERSION
-    # ---------------------------------
-    
-    # Start with ONLY employee rows (no totals, no spacer rows)
+    # Add totals
     employee_rows = final_output[
         ~final_output['Name'].astype(str).str.contains('TOTAL|GRAND TOTAL', na=False, case=False) &
         (final_output['Name'].astype(str).str.strip() != '')
     ].copy()
     employee_rows = employee_rows.reset_index(drop=True)
     
-    # Identify unique roles in order of appearance
     roles_in_order = []
     for role in employee_rows['Role']:
         if role not in roles_in_order:
             roles_in_order.append(role)
     
-    # Rebuild output from scratch with clean spacing
     output_rows = []
     
     for i, role in enumerate(roles_in_order):
         role_rows = employee_rows[employee_rows['Role'] == role]
         
-        # Add all employees in this role
         for _, row in role_rows.iterrows():
             output_rows.append(row.to_dict())
         
-        # Add Server TOTAL row immediately after the last Server employee (no blank row after it)
         if role == 'Server':
             server_rows = employee_rows[employee_rows['Role'] == 'Server']
             total_row = {col: '' for col in employee_rows.columns}
             total_row['Name'] = 'TOTAL'
             total_row['Role'] = 'Server'
             
-            sum_cols = ['Raw Hours', 'Total Break Time', 'Total Hours Worked', 
-                        'Estimated Total Pay', 'Gross Sales', 'Net Sales', 
-                        'Service Tips', 'Tip Out', 'Tip-Out Tips', 'Merchant Fee', 'Final Pay']
+            sum_cols = ['Raw Hours', 'Total Break Time', 'Total Hours Worked', 'Estimated Total Pay', 
+                       'Gross Sales', 'Net Sales', 'Service Tips', 'Tip Out', 'Tip-Out Tips', 'Merchant Fee', 'Final Pay']
             
             for col in sum_cols:
                 if col in server_rows.columns:
@@ -530,22 +388,18 @@ def process_payroll(
             
             output_rows.append(total_row)
         
-        # Add ONE blank row separator after each role (except the last role)
         if i < len(roles_in_order) - 1:
             spacer_row = {col: '' for col in employee_rows.columns}
             output_rows.append(spacer_row)
     
-    # Create clean final_output
     final_output = pd.DataFrame(output_rows)
     
-    # Calculate GRAND TOTAL from employee rows only (exclude Server TOTAL row)
     grand_total_row = {col: '' for col in employee_rows.columns}
     grand_total_row['Name'] = 'GRAND TOTAL'
     grand_total_row['Role'] = 'All Sections'
     
-    sum_cols = ['Raw Hours', 'Total Break Time', 'Total Hours Worked', 
-                'Estimated Total Pay', 'Gross Sales', 'Net Sales', 
-                'Service Tips', 'Tip Out', 'Tip-Out Tips', 'Merchant Fee', 'Final Pay']
+    sum_cols = ['Raw Hours', 'Total Break Time', 'Total Hours Worked', 'Estimated Total Pay', 
+               'Gross Sales', 'Net Sales', 'Service Tips', 'Tip Out', 'Tip-Out Tips', 'Merchant Fee', 'Final Pay']
     
     for col in sum_cols:
         if col in employee_rows.columns:
@@ -559,14 +413,10 @@ def process_payroll(
     else:
         grand_total_row['Effective Hourly Rate'] = 0
     
-    # Add a blank row before GRAND TOTAL, then the GRAND TOTAL row
     blank_row = {col: '' for col in employee_rows.columns}
     final_output = pd.concat([final_output, pd.DataFrame([blank_row])], ignore_index=True)
     final_output = pd.concat([final_output, pd.DataFrame([grand_total_row])], ignore_index=True)
 
-    # ---------------------------------
-    # EXPORT RESULTS
-    # ---------------------------------
     downloads_dir = Path.home() / "Downloads"
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     
@@ -577,3 +427,128 @@ def process_payroll(
     final_output.to_csv(csv_path, index=False)
     
     return str(excel_path)
+
+# ============= GUI CODE =============
+
+class PayrollApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Payroll Processor")
+        self.root.geometry("600x500")
+        
+        self.productivity_file = ""
+        self.labor_file = ""
+        self.timecard_file = ""
+        
+        self.setup_ui()
+    
+    def setup_ui(self):
+        title = tk.Label(self.root, text="Payroll Processing System", font=("Arial", 16, "bold"))
+        title.pack(pady=10)
+        
+        frame1 = tk.Frame(self.root)
+        frame1.pack(pady=5, padx=20, fill="x")
+        tk.Label(frame1, text="Productivity CSV:", width=15, anchor="w").pack(side="left")
+        self.prod_label = tk.Label(frame1, text="No file selected", fg="gray", anchor="w")
+        self.prod_label.pack(side="left", padx=5, expand=True, fill="x")
+        tk.Button(frame1, text="Browse", command=self.select_productivity).pack(side="right")
+        
+        frame2 = tk.Frame(self.root)
+        frame2.pack(pady=5, padx=20, fill="x")
+        tk.Label(frame2, text="Labor CSV:", width=15, anchor="w").pack(side="left")
+        self.labor_label = tk.Label(frame2, text="No file selected", fg="gray", anchor="w")
+        self.labor_label.pack(side="left", padx=5, expand=True, fill="x")
+        tk.Button(frame2, text="Browse", command=self.select_labor).pack(side="right")
+        
+        frame3 = tk.Frame(self.root)
+        frame3.pack(pady=5, padx=20, fill="x")
+        tk.Label(frame3, text="Timecard CSV/Excel:", width=15, anchor="w").pack(side="left")
+        self.time_label = tk.Label(frame3, text="No file selected", fg="gray", anchor="w")
+        self.time_label.pack(side="left", padx=5, expand=True, fill="x")
+        tk.Button(frame3, text="Browse", command=self.select_timecard).pack(side="right")
+        
+        self.progress = ttk.Progressbar(self.root, mode='indeterminate')
+        self.progress.pack(pady=20, padx=20, fill="x")
+        
+        self.process_btn = tk.Button(self.root, text="Process Payroll", command=self.process_payroll, 
+                                      bg="blue", fg="white", font=("Arial", 12, "bold"), height=2)
+        self.process_btn.pack(pady=20)
+        
+        self.status_label = tk.Label(self.root, text="Ready", fg="green")
+        self.status_label.pack(pady=10)
+    
+    def select_productivity(self):
+        self.productivity_file = filedialog.askopenfilename(
+            title="Select Productivity CSV",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        if self.productivity_file:
+            self.prod_label.config(text=Path(self.productivity_file).name, fg="black")
+            self.check_ready()
+    
+    def select_labor(self):
+        self.labor_file = filedialog.askopenfilename(
+            title="Select Labor CSV",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        if self.labor_file:
+            self.labor_label.config(text=Path(self.labor_file).name, fg="black")
+            self.check_ready()
+    
+    def select_timecard(self):
+        self.timecard_file = filedialog.askopenfilename(
+            title="Select Timecard File",
+            filetypes=[("CSV files", "*.csv"), ("Excel files", "*.xlsx"), ("All files", "*.*")]
+        )
+        if self.timecard_file:
+            self.time_label.config(text=Path(self.timecard_file).name, fg="black")
+            self.check_ready()
+    
+    def check_ready(self):
+        if self.productivity_file and self.labor_file and self.timecard_file:
+            self.process_btn.config(bg="green")
+            self.status_label.config(text="All files selected. Ready to process!", fg="green")
+    
+    def process_payroll(self):
+        if not all([self.productivity_file, self.labor_file, self.timecard_file]):
+            messagebox.showwarning("Missing Files", "Please select all three files before processing.")
+            return
+        
+        self.process_btn.config(state="disabled", bg="gray")
+        self.status_label.config(text="Processing payroll...", fg="orange")
+        self.progress.start()
+        
+        thread = threading.Thread(target=self.run_payroll)
+        thread.start()
+    
+    def run_payroll(self):
+        try:
+            output_file = process_payroll(
+                self.productivity_file,
+                self.labor_file,
+                self.timecard_file
+            )
+            self.root.after(0, self.on_success, output_file)
+        except Exception as e:
+            self.root.after(0, self.on_error, str(e))
+    
+    def on_success(self, output_file):
+        self.progress.stop()
+        self.status_label.config(text=f"Complete! Output saved to: {output_file}", fg="green")
+        self.process_btn.config(state="normal", bg="green")
+        
+        result = messagebox.askyesno("Success", 
+            f"Payroll processed successfully!\n\nOutput saved to:\n{output_file}\n\nOpen folder?")
+        if result:
+            os.startfile(Path(output_file).parent)
+    
+    def on_error(self, error_msg):
+        self.progress.stop()
+        self.status_label.config(text=f"Error: {error_msg}", fg="red")
+        self.process_btn.config(state="normal", bg="blue")
+        messagebox.showerror("Processing Error", f"An error occurred:\n\n{error_msg}")
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = PayrollApp(root)
+    root.mainloop()
