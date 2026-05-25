@@ -136,6 +136,16 @@ def process_payroll(productivity_file, labor_file, timecard_file, percentages=No
     if percentages is None:
         percentages = ROLE_PERCENTAGES
 
+    # Read the first line of productivity CSV to get date range
+    with open(productivity_file, 'r', encoding='utf-8-sig') as f:
+        first_line = f.readline().strip()
+    
+    # Extract date range text
+    date_range_text = first_line
+    if date_range_text.startswith('Date Range:'):
+        date_range_text = date_range_text.replace('Date Range:', '').strip()
+    
+    # Read the actual data (skip the first row)
     productivity_df = pd.read_csv(productivity_file, skiprows=1)
     
     if timecard_file.endswith('.xlsx'):
@@ -417,11 +427,33 @@ def process_payroll(productivity_file, labor_file, timecard_file, percentages=No
     final_output = pd.concat([final_output, pd.DataFrame([blank_row])], ignore_index=True)
     final_output = pd.concat([final_output, pd.DataFrame([grand_total_row])], ignore_index=True)
 
+    # Create a date range row to insert at the top (before headers)
+    # This creates a row with the date range in column A, and empty in other columns
+    date_row_data = {col: '' for col in final_output.columns}
+    date_row_data[output_columns[0]] = date_range_text  # Put date in first column (Name)
+    
+    # Insert the date row at the beginning
+    final_output = pd.concat([pd.DataFrame([date_row_data]), final_output], ignore_index=True)
+
     downloads_dir = Path.home() / "Downloads"
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     
     excel_path = downloads_dir / f"processed_payroll_{timestamp}.xlsx"
-    final_output.to_excel(excel_path, index=False)
+    
+    # Write to Excel with black text (default is black, no styling needed)
+    with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+        final_output.to_excel(writer, sheet_name='Payroll', index=False)
+        # Get the workbook and worksheet
+        workbook = writer.book
+        worksheet = writer.sheets['Payroll']
+        
+        # Set all text to black (removing any automatic coloring)
+        from openpyxl.styles import Font
+        black_font = Font(color='000000')
+        
+        for row in worksheet.iter_rows():
+            for cell in row:
+                cell.font = black_font
     
     csv_path = downloads_dir / f"processed_payroll_{timestamp}.csv"
     final_output.to_csv(csv_path, index=False)
@@ -433,49 +465,168 @@ def process_payroll(productivity_file, labor_file, timecard_file, percentages=No
 class PayrollApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Payroll Processor")
-        self.root.geometry("600x500")
+        self.root.title("Payroll Processor Pro")
+        self.root.geometry("700x600")
+        self.root.configure(bg="#f0f0f0")
+        
+        # Center the window on screen
+        self.center_window()
         
         self.productivity_file = ""
         self.labor_file = ""
         self.timecard_file = ""
         
+        # Configure styles
+        self.setup_styles()
         self.setup_ui()
     
+    def center_window(self):
+        """Center the window on the screen"""
+        self.root.update_idletasks()
+        width = 700
+        height = 600
+        x = (self.root.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.root.winfo_screenheight() // 2) - (height // 2)
+        self.root.geometry(f'{width}x{height}+{x}+{y}')
+    
+    def setup_styles(self):
+        """Configure custom colors and fonts"""
+        self.colors = {
+            'bg': '#f5f5f5',
+            'primary': '#2c3e50',
+            'secondary': '#3498db',
+            'success': '#27ae60',
+            'danger': '#e74c3c',
+            'warning': '#f39c12',
+            'white': '#ffffff',
+            'gray': '#7f8c8d',
+            'light_gray': '#ecf0f1'
+        }
+        
+        self.fonts = {
+            'title': ('Helvetica', 18, 'bold'),
+            'heading': ('Helvetica', 12, 'bold'),
+            'normal': ('Helvetica', 10),
+            'button': ('Helvetica', 11, 'bold')
+        }
+    
+    def create_card(self, parent, title, **kwargs):
+        """Create a styled card frame"""
+        card = tk.Frame(parent, bg=self.colors['white'], relief=tk.RAISED, bd=1)
+        card.pack(fill="x", pady=10, padx=20, **kwargs)
+        
+        # Title bar
+        title_bar = tk.Frame(card, bg=self.colors['primary'], height=35)
+        title_bar.pack(fill="x")
+        title_bar.pack_propagate(False)
+        
+        title_label = tk.Label(title_bar, text=title, font=self.fonts['heading'],
+                               bg=self.colors['primary'], fg=self.colors['white'])
+        title_label.pack(side="left", padx=15, pady=8)
+        
+        content = tk.Frame(card, bg=self.colors['white'], padx=15, pady=15)
+        content.pack(fill="x")
+        
+        return content
+    
     def setup_ui(self):
-        title = tk.Label(self.root, text="Payroll Processing System", font=("Arial", 16, "bold"))
-        title.pack(pady=10)
+        """Setup the main UI"""
+        # Main container
+        main_container = tk.Frame(self.root, bg=self.colors['bg'])
+        main_container.pack(fill="both", expand=True, padx=20, pady=20)
         
-        frame1 = tk.Frame(self.root)
-        frame1.pack(pady=5, padx=20, fill="x")
-        tk.Label(frame1, text="Productivity CSV:", width=15, anchor="w").pack(side="left")
-        self.prod_label = tk.Label(frame1, text="No file selected", fg="gray", anchor="w")
-        self.prod_label.pack(side="left", padx=5, expand=True, fill="x")
-        tk.Button(frame1, text="Browse", command=self.select_productivity).pack(side="right")
+        # Header
+        header = tk.Frame(main_container, bg=self.colors['primary'], height=80)
+        header.pack(fill="x", pady=(0, 20))
+        header.pack_propagate(False)
         
-        frame2 = tk.Frame(self.root)
-        frame2.pack(pady=5, padx=20, fill="x")
-        tk.Label(frame2, text="Labor CSV:", width=15, anchor="w").pack(side="left")
-        self.labor_label = tk.Label(frame2, text="No file selected", fg="gray", anchor="w")
-        self.labor_label.pack(side="left", padx=5, expand=True, fill="x")
-        tk.Button(frame2, text="Browse", command=self.select_labor).pack(side="right")
+        # App icon
+        icon_label = tk.Label(header, text="💰", font=('Helvetica', 36),
+                             bg=self.colors['primary'], fg=self.colors['white'])
+        icon_label.pack(side="left", padx=20, pady=15)
         
-        frame3 = tk.Frame(self.root)
-        frame3.pack(pady=5, padx=20, fill="x")
-        tk.Label(frame3, text="Timecard CSV/Excel:", width=15, anchor="w").pack(side="left")
-        self.time_label = tk.Label(frame3, text="No file selected", fg="gray", anchor="w")
-        self.time_label.pack(side="left", padx=5, expand=True, fill="x")
-        tk.Button(frame3, text="Browse", command=self.select_timecard).pack(side="right")
+        title_label = tk.Label(header, text="Payroll Processor Pro", 
+                               font=self.fonts['title'],
+                               bg=self.colors['primary'], fg=self.colors['white'])
+        title_label.pack(side="left", padx=10)
         
-        self.progress = ttk.Progressbar(self.root, mode='indeterminate')
-        self.progress.pack(pady=20, padx=20, fill="x")
+        subtitle_label = tk.Label(header, text="Automated Payroll Processing System",
+                                  font=('Helvetica', 10),
+                                  bg=self.colors['primary'], fg=self.colors['light_gray'])
+        subtitle_label.pack(side="left", padx=10, pady=(25, 0))
         
-        self.process_btn = tk.Button(self.root, text="Process Payroll", command=self.process_payroll, 
-                                      bg="blue", fg="white", font=("Arial", 12, "bold"), height=2)
-        self.process_btn.pack(pady=20)
+        # Files Card
+        files_card = self.create_card(main_container, "📄 Input Files")
         
-        self.status_label = tk.Label(self.root, text="Ready", fg="green")
-        self.status_label.pack(pady=10)
+        # Productivity file row
+        prod_frame = tk.Frame(files_card, bg=self.colors['white'])
+        prod_frame.pack(fill="x", pady=8)
+        tk.Label(prod_frame, text="Productivity CSV:", width=20, anchor="w",
+                font=self.fonts['normal'], bg=self.colors['white']).pack(side="left")
+        self.prod_display = tk.Label(prod_frame, text="No file selected", 
+                                     bg=self.colors['white'], fg=self.colors['gray'],
+                                     font=self.fonts['normal'], anchor="w")
+        self.prod_display.pack(side="left", padx=10, fill="x", expand=True)
+        tk.Button(prod_frame, text="Browse", command=self.select_productivity,
+                 bg=self.colors['secondary'], fg='white', cursor="hand2",
+                 relief=tk.FLAT, padx=15, pady=3).pack(side="right")
+        
+        # Labor file row
+        labor_frame = tk.Frame(files_card, bg=self.colors['white'])
+        labor_frame.pack(fill="x", pady=8)
+        tk.Label(labor_frame, text="Labor CSV:", width=20, anchor="w",
+                font=self.fonts['normal'], bg=self.colors['white']).pack(side="left")
+        self.labor_display = tk.Label(labor_frame, text="No file selected",
+                                      bg=self.colors['white'], fg=self.colors['gray'],
+                                      font=self.fonts['normal'], anchor="w")
+        self.labor_display.pack(side="left", padx=10, fill="x", expand=True)
+        tk.Button(labor_frame, text="Browse", command=self.select_labor,
+                 bg=self.colors['secondary'], fg='white', cursor="hand2",
+                 relief=tk.FLAT, padx=15, pady=3).pack(side="right")
+        
+        # Timecard file row
+        timecard_frame = tk.Frame(files_card, bg=self.colors['white'])
+        timecard_frame.pack(fill="x", pady=8)
+        tk.Label(timecard_frame, text="Timecard File:", width=20, anchor="w",
+                font=self.fonts['normal'], bg=self.colors['white']).pack(side="left")
+        self.time_display = tk.Label(timecard_frame, text="No file selected",
+                                     bg=self.colors['white'], fg=self.colors['gray'],
+                                     font=self.fonts['normal'], anchor="w")
+        self.time_display.pack(side="left", padx=10, fill="x", expand=True)
+        tk.Button(timecard_frame, text="Browse", command=self.select_timecard,
+                 bg=self.colors['secondary'], fg='white', cursor="hand2",
+                 relief=tk.FLAT, padx=15, pady=3).pack(side="right")
+        
+        # Status Card
+        status_card = self.create_card(main_container, "⚡ Processing Status")
+        
+        self.status_var = tk.StringVar(value="Ready")
+        self.status_label = tk.Label(status_card, textvariable=self.status_var,
+                                     font=self.fonts['normal'], bg=self.colors['white'],
+                                     fg=self.colors['success'])
+        self.status_label.pack(pady=5)
+        
+        # Progress bar
+        self.progress = ttk.Progressbar(status_card, mode='indeterminate', length=400)
+        self.progress.pack(pady=10)
+        
+        # Process Button
+        button_frame = tk.Frame(main_container, bg=self.colors['bg'])
+        button_frame.pack(pady=20)
+        
+        self.process_btn = tk.Button(button_frame, text="▶ PROCESS PAYROLL", 
+                                     command=self.process_payroll,
+                                     font=self.fonts['button'],
+                                     bg=self.colors['secondary'], fg=self.colors['white'],
+                                     padx=30, pady=12, cursor="hand2",
+                                     relief=tk.RAISED, bd=2)
+        self.process_btn.pack()
+        
+        # Footer
+        footer = tk.Frame(main_container, bg=self.colors['bg'])
+        footer.pack(fill="x", pady=(20, 0))
+        tk.Label(footer, text="© 2025 Payroll Processor Pro | Version 1.0",
+                font=('Helvetica', 8), bg=self.colors['bg'], fg=self.colors['gray']).pack()
     
     def select_productivity(self):
         self.productivity_file = filedialog.askopenfilename(
@@ -483,7 +634,7 @@ class PayrollApp:
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
         )
         if self.productivity_file:
-            self.prod_label.config(text=Path(self.productivity_file).name, fg="black")
+            self.prod_display.config(text=Path(self.productivity_file).name, fg=self.colors['primary'])
             self.check_ready()
     
     def select_labor(self):
@@ -492,7 +643,7 @@ class PayrollApp:
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
         )
         if self.labor_file:
-            self.labor_label.config(text=Path(self.labor_file).name, fg="black")
+            self.labor_display.config(text=Path(self.labor_file).name, fg=self.colors['primary'])
             self.check_ready()
     
     def select_timecard(self):
@@ -501,21 +652,27 @@ class PayrollApp:
             filetypes=[("CSV files", "*.csv"), ("Excel files", "*.xlsx"), ("All files", "*.*")]
         )
         if self.timecard_file:
-            self.time_label.config(text=Path(self.timecard_file).name, fg="black")
+            self.time_display.config(text=Path(self.timecard_file).name, fg=self.colors['primary'])
             self.check_ready()
     
     def check_ready(self):
         if self.productivity_file and self.labor_file and self.timecard_file:
-            self.process_btn.config(bg="green")
-            self.status_label.config(text="All files selected. Ready to process!", fg="green")
+            self.process_btn.config(bg=self.colors['success'], state="normal")
+            self.status_var.set("All files selected. Ready to process!")
+            self.status_label.config(fg=self.colors['success'])
+        else:
+            self.process_btn.config(bg=self.colors['secondary'], state="normal")
+            self.status_var.set("Please select all three files")
+            self.status_label.config(fg=self.colors['gray'])
     
     def process_payroll(self):
         if not all([self.productivity_file, self.labor_file, self.timecard_file]):
             messagebox.showwarning("Missing Files", "Please select all three files before processing.")
             return
         
-        self.process_btn.config(state="disabled", bg="gray")
-        self.status_label.config(text="Processing payroll...", fg="orange")
+        self.process_btn.config(state="disabled", bg=self.colors['gray'])
+        self.status_var.set("Processing payroll... Please wait")
+        self.status_label.config(fg=self.colors['warning'])
         self.progress.start()
         
         thread = threading.Thread(target=self.run_payroll)
@@ -534,19 +691,21 @@ class PayrollApp:
     
     def on_success(self, output_file):
         self.progress.stop()
-        self.status_label.config(text=f"Complete! Output saved to: {output_file}", fg="green")
-        self.process_btn.config(state="normal", bg="green")
+        self.status_var.set("Complete! Output saved to Downloads folder")
+        self.status_label.config(fg=self.colors['success'])
+        self.process_btn.config(state="normal", bg=self.colors['success'])
         
-        result = messagebox.askyesno("Success", 
-            f"Payroll processed successfully!\n\nOutput saved to:\n{output_file}\n\nOpen folder?")
+        result = messagebox.askyesno("✅ Success", 
+            f"Payroll processed successfully!\n\n📄 Output saved to:\n{output_file}\n\n📂 Open folder?")
         if result:
             os.startfile(Path(output_file).parent)
     
     def on_error(self, error_msg):
         self.progress.stop()
-        self.status_label.config(text=f"Error: {error_msg}", fg="red")
-        self.process_btn.config(state="normal", bg="blue")
-        messagebox.showerror("Processing Error", f"An error occurred:\n\n{error_msg}")
+        self.status_var.set(f"Error: {error_msg[:50]}...")
+        self.status_label.config(fg=self.colors['danger'])
+        self.process_btn.config(state="normal", bg=self.colors['secondary'])
+        messagebox.showerror("❌ Processing Error", f"An error occurred:\n\n{error_msg}")
 
 if __name__ == "__main__":
     root = tk.Tk()
