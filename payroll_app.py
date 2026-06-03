@@ -10,7 +10,7 @@ import re
 
 # ============= PAYROLL PROCESSOR CODE (embedded) =============
 
-ROLE_PERCENTAGES = {
+DEFAULT_ROLE_PERCENTAGES = {
     "Busser": 0.42,
     "Food Runner": 0.19,
     "Food-Bar Runner": 0.29,
@@ -18,6 +18,10 @@ ROLE_PERCENTAGES = {
     "Cashier/Host": 0.03,
     "Bartender": 0.025
 }
+
+DEFAULT_TIPOUT_PERCENTAGE = 0.07
+
+ROLE_PERCENTAGES = DEFAULT_ROLE_PERCENTAGES.copy()
 
 def clean_money(value):
     if pd.isna(value):
@@ -95,10 +99,18 @@ def calculate_breaks_from_timecard(timecard_df):
                 pass
         
         clock_in_hour = clock_in.hour + clock_in.minute / 60
-        if clock_in_hour < 13 and clock_out.hour >= 21:
+        shift_hours = float(row['Total Hours Worked (h)'])
+
+        if shift_hours < 3:
+            timecard_df.at[idx, 'Break Minutes'] = 0.0
+            timecard_df.at[idx, 'Break Count'] = 0
+            timecard_df.at[idx, 'Break Hours'] = 0.0
+
+        elif clock_in_hour < 13 and clock_out.hour >= 21:
             timecard_df.at[idx, 'Break Minutes'] = 40.0
             timecard_df.at[idx, 'Break Count'] = 2
             timecard_df.at[idx, 'Break Hours'] = 40.0 / 60.0
+
         else:
             timecard_df.at[idx, 'Break Minutes'] = 20.0
             timecard_df.at[idx, 'Break Count'] = 1
@@ -132,7 +144,13 @@ def calculate_breaks_from_timecard(timecard_df):
     
     return timecard_agg
 
-def process_payroll(productivity_file, labor_file, timecard_file, percentages=None):
+def process_payroll(
+    productivity_file,
+    labor_file,
+    timecard_file,
+    percentages=None,
+    tipout_percentage=DEFAULT_TIPOUT_PERCENTAGE
+):
     if percentages is None:
         percentages = ROLE_PERCENTAGES
 
@@ -239,7 +257,7 @@ def process_payroll(productivity_file, labor_file, timecard_file, percentages=No
 
     server_mask = merged['Role'].str.contains('Server', case=False, na=False) & ~merged['Role'].str.contains('Trainee', case=False, na=False)
     
-    merged.loc[server_mask, 'Tip Out'] = merged.loc[server_mask, 'Gross Sales'] * 0.07
+    merged.loc[server_mask, 'Tip Out'] = merged.loc[server_mask, 'Gross Sales'] * tipout_percentage
     merged.loc[server_mask, 'Gross Tips'] = merged.loc[server_mask, 'Service Tips'] - merged.loc[server_mask, 'Tip Out']
     merged.loc[server_mask, 'Merchant Fee'] = merged.loc[server_mask, 'Gross Tips'].apply(lambda x: max(0, x * 0.03))
     merged.loc[server_mask, 'Total Tips'] = merged.loc[server_mask, 'Gross Tips'] - merged.loc[server_mask, 'Merchant Fee']
@@ -466,7 +484,7 @@ class PayrollApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Payroll Processor Pro")
-        self.root.geometry("700x600")
+        self.root.geometry("700x850")
         self.root.configure(bg="#f0f0f0")
         
         # Center the window on screen
@@ -475,6 +493,17 @@ class PayrollApp:
         self.productivity_file = ""
         self.labor_file = ""
         self.timecard_file = ""
+
+        self.tipout_var = tk.StringVar(value="7")
+
+        self.role_vars = {
+            "Busser": tk.StringVar(value="42"),
+            "Food Runner": tk.StringVar(value="19"),
+            "Food-Bar Runner": tk.StringVar(value="29"),
+            "Food-Bar Prep": tk.StringVar(value="4.5"),
+            "Cashier/Host": tk.StringVar(value="3"),
+            "Bartender": tk.StringVar(value="2.5")
+        }
         
         # Configure styles
         self.setup_styles()
@@ -484,7 +513,7 @@ class PayrollApp:
         """Center the window on the screen"""
         self.root.update_idletasks()
         width = 700
-        height = 600
+        height = 850
         x = (self.root.winfo_screenwidth() // 2) - (width // 2)
         y = (self.root.winfo_screenheight() // 2) - (height // 2)
         self.root.geometry(f'{width}x{height}+{x}+{y}')
@@ -596,6 +625,35 @@ class PayrollApp:
         tk.Button(timecard_frame, text="Browse", command=self.select_timecard,
                  bg=self.colors['secondary'], fg='white', cursor="hand2",
                  relief=tk.FLAT, padx=15, pady=3).pack(side="right")
+
+        # Tip-Out Settings Card
+        settings_card = self.create_card(main_container, "💵 Tip-Out Settings")
+
+        tipout_frame = tk.Frame(settings_card, bg=self.colors['white'])
+        tipout_frame.pack(fill="x", pady=5)
+
+        tk.Label(tipout_frame, text="Server Tip-Out %", width=20, anchor="w",
+                 bg=self.colors['white']).pack(side="left")
+
+        tk.Entry(tipout_frame, textvariable=self.tipout_var, width=10).pack(side="left")
+
+        tk.Label(tipout_frame,
+                 bg=self.colors['white']).pack(side="left", padx=5)
+
+        tk.Label(settings_card, text="Role Pool Percentages",
+                 font=self.fonts['heading'],
+                 bg=self.colors['white']).pack(anchor="w", pady=(10, 5))
+
+        for role, var in self.role_vars.items():
+            row = tk.Frame(settings_card, bg=self.colors['white'])
+            row.pack(fill="x", pady=2)
+
+            tk.Label(row, text=role, width=20, anchor="w",
+                     bg=self.colors['white']).pack(side="left")
+
+            tk.Entry(row, textvariable=var, width=10).pack(side="left")
+
+            tk.Label(row, text="%", bg=self.colors['white']).pack(side="left")
         
         # Status Card
         status_card = self.create_card(main_container, "⚡ Processing Status")
@@ -680,12 +738,23 @@ class PayrollApp:
     
     def run_payroll(self):
         try:
+            percentages = {}
+
+            for role, var in self.role_vars.items():
+                percentages[role] = float(var.get()) / 100
+
+            tipout_percentage = float(self.tipout_var.get()) / 100
+
             output_file = process_payroll(
                 self.productivity_file,
                 self.labor_file,
-                self.timecard_file
+                self.timecard_file,
+                percentages=percentages,
+                tipout_percentage=tipout_percentage
             )
+
             self.root.after(0, self.on_success, output_file)
+
         except Exception as e:
             self.root.after(0, self.on_error, str(e))
     
