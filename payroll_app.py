@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, ttk, Scrollbar
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
@@ -10,7 +10,7 @@ import re
 
 # ============= PAYROLL PROCESSOR CODE (embedded) =============
 
-DEFAULT_ROLE_PERCENTAGES = {
+DEFAULT_ROLE_PERCENTAGES_MAAX = {
     "Busser": 0.42,
     "Food Runner": 0.19,
     "Food-Bar Runner": 0.29,
@@ -19,9 +19,13 @@ DEFAULT_ROLE_PERCENTAGES = {
     "Bartender": 0.025
 }
 
-DEFAULT_TIPOUT_PERCENTAGE = 0.07
+DEFAULT_ROLE_PERCENTAGES_TOMAHAWK = {
+    "Busser": 0.42,
+    "Cashier/Host": 0.03,
+    "Bartender": 0.025
+}
 
-ROLE_PERCENTAGES = DEFAULT_ROLE_PERCENTAGES.copy()
+DEFAULT_TIPOUT_PERCENTAGE = 0.07
 
 def clean_money(value):
     if pd.isna(value):
@@ -149,10 +153,14 @@ def process_payroll(
     labor_file,
     timecard_file,
     percentages=None,
-    tipout_percentage=DEFAULT_TIPOUT_PERCENTAGE
+    tipout_percentage=DEFAULT_TIPOUT_PERCENTAGE,
+    mode="maax"
 ):
     if percentages is None:
-        percentages = ROLE_PERCENTAGES
+        if mode == "tomahawk":
+            percentages = DEFAULT_ROLE_PERCENTAGES_TOMAHAWK.copy()
+        else:
+            percentages = DEFAULT_ROLE_PERCENTAGES_MAAX.copy()
 
     # Read the first line of productivity CSV to get date range
     with open(productivity_file, 'r', encoding='utf-8-sig') as f:
@@ -271,19 +279,30 @@ def process_payroll(
     
     role_hours = {}
     for role in percentages.keys():
-        if role == "Food Runner":
-            mask = merged['Role'].str.lower() == 'food runner'
-        elif role == "Food-Bar Runner":
-            mask = merged['Role'].str.lower() == 'food-bar runner'
-        elif role == "Food-Bar Prep":
-            mask = merged['Role'].str.lower() == 'food-bar prep'
-        elif role == "Cashier/Host":
-            mask = (merged['Role'].str.lower().str.contains('cashier', na=False) | 
-                   merged['Role'].str.lower().str.contains('host', na=False)) & \
-                   ~merged['Role'].str.lower().str.contains('trainee', na=False)
+        if mode == "tomahawk":
+            # Tomahawk mode: only Busser, Cashier/Host, Bartender
+            if role == "Cashier/Host":
+                mask = (merged['Role'].str.lower().str.contains('cashier', na=False) | 
+                       merged['Role'].str.lower().str.contains('host', na=False)) & \
+                       ~merged['Role'].str.lower().str.contains('trainee', na=False)
+            else:
+                mask = merged['Role'].str.contains(role, case=False, na=False) & \
+                       ~merged['Role'].str.contains('Trainee', case=False, na=False)
         else:
-            mask = merged['Role'].str.contains(role, case=False, na=False) & \
-                   ~merged['Role'].str.contains('Trainee', case=False, na=False)
+            # Maax mode: all roles
+            if role == "Food Runner":
+                mask = merged['Role'].str.lower() == 'food runner'
+            elif role == "Food-Bar Runner":
+                mask = merged['Role'].str.lower() == 'food-bar runner'
+            elif role == "Food-Bar Prep":
+                mask = merged['Role'].str.lower() == 'food-bar prep'
+            elif role == "Cashier/Host":
+                mask = (merged['Role'].str.lower().str.contains('cashier', na=False) | 
+                       merged['Role'].str.lower().str.contains('host', na=False)) & \
+                       ~merged['Role'].str.lower().str.contains('trainee', na=False)
+            else:
+                mask = merged['Role'].str.contains(role, case=False, na=False) & \
+                       ~merged['Role'].str.contains('Trainee', case=False, na=False)
         
         role_hours[role] = merged.loc[mask, 'Total Hours Worked'].sum()
     
@@ -300,18 +319,28 @@ def process_payroll(
             
         employee_role = str(row['Role']).lower()
         
-        if employee_role == 'food runner':
-            merged.at[idx, 'Tip-Out Tips'] = hourly_tip_rates['Food Runner'] * row['Total Hours Worked']
-        elif employee_role == 'food-bar runner':
-            merged.at[idx, 'Tip-Out Tips'] = hourly_tip_rates['Food-Bar Runner'] * row['Total Hours Worked']
-        elif employee_role == 'food-bar prep':
-            merged.at[idx, 'Tip-Out Tips'] = hourly_tip_rates['Food-Bar Prep'] * row['Total Hours Worked']
-        elif 'busser' in employee_role and 'trainee' not in employee_role:
-            merged.at[idx, 'Tip-Out Tips'] = hourly_tip_rates['Busser'] * row['Total Hours Worked']
-        elif ('cashier' in employee_role or 'host' in employee_role) and 'trainee' not in employee_role:
-            merged.at[idx, 'Tip-Out Tips'] = hourly_tip_rates['Cashier/Host'] * row['Total Hours Worked']
-        elif 'bartender' in employee_role:
-            merged.at[idx, 'Tip-Out Tips'] = hourly_tip_rates['Bartender'] * row['Total Hours Worked']
+        if mode == "tomahawk":
+            # Tomahawk mode: only Busser, Cashier/Host, Bartender
+            if 'busser' in employee_role and 'trainee' not in employee_role:
+                merged.at[idx, 'Tip-Out Tips'] = hourly_tip_rates['Busser'] * row['Total Hours Worked']
+            elif ('cashier' in employee_role or 'host' in employee_role) and 'trainee' not in employee_role:
+                merged.at[idx, 'Tip-Out Tips'] = hourly_tip_rates['Cashier/Host'] * row['Total Hours Worked']
+            elif 'bartender' in employee_role:
+                merged.at[idx, 'Tip-Out Tips'] = hourly_tip_rates['Bartender'] * row['Total Hours Worked']
+        else:
+            # Maax mode: all roles
+            if employee_role == 'food runner':
+                merged.at[idx, 'Tip-Out Tips'] = hourly_tip_rates['Food Runner'] * row['Total Hours Worked']
+            elif employee_role == 'food-bar runner':
+                merged.at[idx, 'Tip-Out Tips'] = hourly_tip_rates['Food-Bar Runner'] * row['Total Hours Worked']
+            elif employee_role == 'food-bar prep':
+                merged.at[idx, 'Tip-Out Tips'] = hourly_tip_rates['Food-Bar Prep'] * row['Total Hours Worked']
+            elif 'busser' in employee_role and 'trainee' not in employee_role:
+                merged.at[idx, 'Tip-Out Tips'] = hourly_tip_rates['Busser'] * row['Total Hours Worked']
+            elif ('cashier' in employee_role or 'host' in employee_role) and 'trainee' not in employee_role:
+                merged.at[idx, 'Tip-Out Tips'] = hourly_tip_rates['Cashier/Host'] * row['Total Hours Worked']
+            elif 'bartender' in employee_role:
+                merged.at[idx, 'Tip-Out Tips'] = hourly_tip_rates['Bartender'] * row['Total Hours Worked']
 
     for idx, row in merged.iterrows():
         if get_base_pay_only(row['Role']):
@@ -348,10 +377,16 @@ def process_payroll(
     
     output_columns = [col for col in output_columns if col in merged.columns]
     
-    role_order = [
-        'Server', 'Bartender', 'Busser', 'Food-Bar Runner', 'Food Runner', 'Cashier/Host',
-        'Food-Bar Prep', 'Prep Cook', 'Dish Washer', 'Host Trainee', 'Server Trainee', 'Busser Trainee', 'Manager'
-    ]
+    if mode == "tomahawk":
+        role_order = [
+            'Server', 'Bartender', 'Busser', 'Cashier/Host',
+            'Prep Cook', 'Dish Washer', 'Host Trainee', 'Server Trainee', 'Busser Trainee', 'Manager'
+        ]
+    else:
+        role_order = [
+            'Server', 'Bartender', 'Busser', 'Food-Bar Runner', 'Food Runner', 'Cashier/Host',
+            'Food-Bar Prep', 'Prep Cook', 'Dish Washer', 'Host Trainee', 'Server Trainee', 'Busser Trainee', 'Manager'
+        ]
     
     final_rows = []
     
@@ -456,7 +491,7 @@ def process_payroll(
     downloads_dir = Path.home() / "Downloads"
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
     
-    excel_path = downloads_dir / f"processed_payroll_{timestamp}.xlsx"
+    excel_path = downloads_dir / f"processed_payroll_{mode}_{timestamp}.xlsx"
     
     # Write to Excel with black text (default is black, no styling needed)
     with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
@@ -473,7 +508,7 @@ def process_payroll(
             for cell in row:
                 cell.font = black_font
     
-    csv_path = downloads_dir / f"processed_payroll_{timestamp}.csv"
+    csv_path = downloads_dir / f"processed_payroll_{mode}_{timestamp}.csv"
     final_output.to_csv(csv_path, index=False)
     
     return str(excel_path)
@@ -484,7 +519,7 @@ class PayrollApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Payroll Processor Pro")
-        self.root.geometry("700x850")
+        self.root.geometry("750x700")
         self.root.configure(bg="#f0f0f0")
         
         # Center the window on screen
@@ -493,10 +528,12 @@ class PayrollApp:
         self.productivity_file = ""
         self.labor_file = ""
         self.timecard_file = ""
+        self.current_mode = "maax"
 
         self.tipout_var = tk.StringVar(value="7")
 
-        self.role_vars = {
+        # Maax role variables
+        self.role_vars_maax = {
             "Busser": tk.StringVar(value="42"),
             "Food Runner": tk.StringVar(value="19"),
             "Food-Bar Runner": tk.StringVar(value="29"),
@@ -505,6 +542,15 @@ class PayrollApp:
             "Bartender": tk.StringVar(value="2.5")
         }
         
+        # Tomahawk role variables
+        self.role_vars_tomahawk = {
+            "Busser": tk.StringVar(value="42"),
+            "Cashier/Host": tk.StringVar(value="3"),
+            "Bartender": tk.StringVar(value="2.5")
+        }
+        
+        self.current_role_vars = self.role_vars_maax
+        
         # Configure styles
         self.setup_styles()
         self.setup_ui()
@@ -512,8 +558,8 @@ class PayrollApp:
     def center_window(self):
         """Center the window on the screen"""
         self.root.update_idletasks()
-        width = 700
-        height = 850
+        width = 750
+        height = 700
         x = (self.root.winfo_screenwidth() // 2) - (width // 2)
         y = (self.root.winfo_screenheight() // 2) - (height // 2)
         self.root.geometry(f'{width}x{height}+{x}+{y}')
@@ -529,162 +575,261 @@ class PayrollApp:
             'warning': '#f39c12',
             'white': '#ffffff',
             'gray': '#7f8c8d',
-            'light_gray': '#ecf0f1'
+            'light_gray': '#ecf0f1',
+            'maax': '#8e44ad',
+            'tomahawk': '#d35400'
         }
         
         self.fonts = {
-            'title': ('Helvetica', 18, 'bold'),
-            'heading': ('Helvetica', 12, 'bold'),
-            'normal': ('Helvetica', 10),
-            'button': ('Helvetica', 11, 'bold')
+            'title': ('Helvetica', 16, 'bold'),
+            'heading': ('Helvetica', 11, 'bold'),
+            'normal': ('Helvetica', 9),
+            'button': ('Helvetica', 10, 'bold')
         }
     
     def create_card(self, parent, title, **kwargs):
         """Create a styled card frame"""
         card = tk.Frame(parent, bg=self.colors['white'], relief=tk.RAISED, bd=1)
-        card.pack(fill="x", pady=10, padx=20, **kwargs)
+        card.pack(fill="x", pady=3, padx=15, **kwargs)
         
         # Title bar
-        title_bar = tk.Frame(card, bg=self.colors['primary'], height=35)
+        title_bar = tk.Frame(card, bg=self.colors['primary'], height=25)
         title_bar.pack(fill="x")
         title_bar.pack_propagate(False)
         
         title_label = tk.Label(title_bar, text=title, font=self.fonts['heading'],
                                bg=self.colors['primary'], fg=self.colors['white'])
-        title_label.pack(side="left", padx=15, pady=8)
+        title_label.pack(side="left", padx=10, pady=3)
         
-        content = tk.Frame(card, bg=self.colors['white'], padx=15, pady=15)
+        content = tk.Frame(card, bg=self.colors['white'], padx=10, pady=8)
         content.pack(fill="x")
         
         return content
     
     def setup_ui(self):
-        """Setup the main UI"""
-        # Main container
-        main_container = tk.Frame(self.root, bg=self.colors['bg'])
-        main_container.pack(fill="both", expand=True, padx=20, pady=20)
+        """Setup the main UI with scrollbar"""
+        # Create a canvas with scrollbar
+        self.canvas = tk.Canvas(self.root, bg=self.colors['bg'])
+        self.canvas.pack(side="left", fill="both", expand=True)
         
+        # Add scrollbar
+        scrollbar = ttk.Scrollbar(self.root, orient="vertical", command=self.canvas.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Create main container inside canvas
+        main_container = tk.Frame(self.canvas, bg=self.colors['bg'])
+        self.canvas_window = self.canvas.create_window((0, 0), window=main_container, anchor="nw", width=730)
+        
+        # Configure canvas to update scroll region
+        def configure_scroll_region(event):
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        
+        main_container.bind("<Configure>", configure_scroll_region)
+        
+        # Configure canvas to resize with window
+        def configure_canvas(event):
+            self.canvas.itemconfig(self.canvas_window, width=event.width - 20)
+        
+        self.canvas.bind("<Configure>", configure_canvas)
+        
+        # Mouse wheel scrolling
+        def on_mousewheel(event):
+            self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        self.canvas.bind_all("<MouseWheel>", on_mousewheel)
+        
+        # Now build the UI inside main_container
+        self.build_ui(main_container)
+    
+    def build_ui(self, main_container):
+        """Build all UI elements inside the container"""
         # Header
-        header = tk.Frame(main_container, bg=self.colors['primary'], height=80)
-        header.pack(fill="x", pady=(0, 20))
+        header = tk.Frame(main_container, bg=self.colors['primary'], height=55)
+        header.pack(fill="x", pady=(0, 8))
         header.pack_propagate(False)
         
-        # App icon
-        icon_label = tk.Label(header, text="💰", font=('Helvetica', 36),
+        icon_label = tk.Label(header, text="💰", font=('Helvetica', 24),
                              bg=self.colors['primary'], fg=self.colors['white'])
-        icon_label.pack(side="left", padx=20, pady=15)
+        icon_label.pack(side="left", padx=10, pady=10)
         
         title_label = tk.Label(header, text="Payroll Processor Pro", 
                                font=self.fonts['title'],
                                bg=self.colors['primary'], fg=self.colors['white'])
-        title_label.pack(side="left", padx=10)
+        title_label.pack(side="left", padx=5)
         
-        subtitle_label = tk.Label(header, text="Automated Payroll Processing System",
-                                  font=('Helvetica', 10),
+        subtitle_label = tk.Label(header, text="v2.0 - MAAX / TOMAHAWK",
+                                  font=('Helvetica', 8),
                                   bg=self.colors['primary'], fg=self.colors['light_gray'])
-        subtitle_label.pack(side="left", padx=10, pady=(25, 0))
+        subtitle_label.pack(side="left", padx=5, pady=(20, 0))
+        
+        # Mode Selection
+        mode_card = self.create_card(main_container, "🔄 Mode Selection")
+        
+        mode_frame = tk.Frame(mode_card, bg=self.colors['white'])
+        mode_frame.pack(fill="x", pady=2)
+        
+        self.maax_btn = tk.Button(mode_frame, text="🏛️ MAAX", 
+                                   command=lambda: self.switch_mode("maax"),
+                                   font=self.fonts['button'],
+                                   bg=self.colors['maax'], fg='white',
+                                   padx=15, pady=3, cursor="hand2",
+                                   relief=tk.RAISED, bd=2, width=12)
+        self.maax_btn.pack(side="left", padx=3)
+        
+        self.tomahawk_btn = tk.Button(mode_frame, text="🪓 TOMAHAWK", 
+                                       command=lambda: self.switch_mode("tomahawk"),
+                                       font=self.fonts['button'],
+                                       bg=self.colors['gray'], fg='white',
+                                       padx=15, pady=3, cursor="hand2",
+                                       relief=tk.RAISED, bd=2, width=12)
+        self.tomahawk_btn.pack(side="left", padx=3)
+        
+        self.mode_indicator = tk.Label(mode_frame, text="Current: MAAX Mode", 
+                                       font=self.fonts['normal'],
+                                       bg=self.colors['white'], fg=self.colors['maax'])
+        self.mode_indicator.pack(side="right", padx=5)
         
         # Files Card
         files_card = self.create_card(main_container, "📄 Input Files")
         
-        # Productivity file row
+        # Productivity file
         prod_frame = tk.Frame(files_card, bg=self.colors['white'])
-        prod_frame.pack(fill="x", pady=8)
-        tk.Label(prod_frame, text="Productivity CSV:", width=20, anchor="w",
+        prod_frame.pack(fill="x", pady=2)
+        tk.Label(prod_frame, text="Productivity CSV:", width=14, anchor="w",
                 font=self.fonts['normal'], bg=self.colors['white']).pack(side="left")
         self.prod_display = tk.Label(prod_frame, text="No file selected", 
                                      bg=self.colors['white'], fg=self.colors['gray'],
                                      font=self.fonts['normal'], anchor="w")
-        self.prod_display.pack(side="left", padx=10, fill="x", expand=True)
+        self.prod_display.pack(side="left", padx=5, fill="x", expand=True)
         tk.Button(prod_frame, text="Browse", command=self.select_productivity,
                  bg=self.colors['secondary'], fg='white', cursor="hand2",
-                 relief=tk.FLAT, padx=15, pady=3).pack(side="right")
+                 relief=tk.FLAT, padx=10, pady=1).pack(side="right")
         
-        # Labor file row
+        # Labor file
         labor_frame = tk.Frame(files_card, bg=self.colors['white'])
-        labor_frame.pack(fill="x", pady=8)
-        tk.Label(labor_frame, text="Labor CSV:", width=20, anchor="w",
+        labor_frame.pack(fill="x", pady=2)
+        tk.Label(labor_frame, text="Labor CSV:", width=14, anchor="w",
                 font=self.fonts['normal'], bg=self.colors['white']).pack(side="left")
         self.labor_display = tk.Label(labor_frame, text="No file selected",
                                       bg=self.colors['white'], fg=self.colors['gray'],
                                       font=self.fonts['normal'], anchor="w")
-        self.labor_display.pack(side="left", padx=10, fill="x", expand=True)
+        self.labor_display.pack(side="left", padx=5, fill="x", expand=True)
         tk.Button(labor_frame, text="Browse", command=self.select_labor,
                  bg=self.colors['secondary'], fg='white', cursor="hand2",
-                 relief=tk.FLAT, padx=15, pady=3).pack(side="right")
+                 relief=tk.FLAT, padx=10, pady=1).pack(side="right")
         
-        # Timecard file row
+        # Timecard file
         timecard_frame = tk.Frame(files_card, bg=self.colors['white'])
-        timecard_frame.pack(fill="x", pady=8)
-        tk.Label(timecard_frame, text="Timecard File:", width=20, anchor="w",
+        timecard_frame.pack(fill="x", pady=2)
+        tk.Label(timecard_frame, text="Timecard File:", width=14, anchor="w",
                 font=self.fonts['normal'], bg=self.colors['white']).pack(side="left")
         self.time_display = tk.Label(timecard_frame, text="No file selected",
                                      bg=self.colors['white'], fg=self.colors['gray'],
                                      font=self.fonts['normal'], anchor="w")
-        self.time_display.pack(side="left", padx=10, fill="x", expand=True)
+        self.time_display.pack(side="left", padx=5, fill="x", expand=True)
         tk.Button(timecard_frame, text="Browse", command=self.select_timecard,
                  bg=self.colors['secondary'], fg='white', cursor="hand2",
-                 relief=tk.FLAT, padx=15, pady=3).pack(side="right")
+                 relief=tk.FLAT, padx=10, pady=1).pack(side="right")
 
-        # Tip-Out Settings Card
-        settings_card = self.create_card(main_container, "💵 Tip-Out Settings")
-
-        tipout_frame = tk.Frame(settings_card, bg=self.colors['white'])
-        tipout_frame.pack(fill="x", pady=5)
-
-        tk.Label(tipout_frame, text="Server Tip-Out %", width=20, anchor="w",
-                 bg=self.colors['white']).pack(side="left")
-
-        tk.Entry(tipout_frame, textvariable=self.tipout_var, width=10).pack(side="left")
-
-        tk.Label(tipout_frame,
-                 bg=self.colors['white']).pack(side="left", padx=5)
-
-        tk.Label(settings_card, text="Role Pool Percentages",
-                 font=self.fonts['heading'],
-                 bg=self.colors['white']).pack(anchor="w", pady=(10, 5))
-
-        for role, var in self.role_vars.items():
-            row = tk.Frame(settings_card, bg=self.colors['white'])
-            row.pack(fill="x", pady=2)
-
-            tk.Label(row, text=role, width=20, anchor="w",
-                     bg=self.colors['white']).pack(side="left")
-
-            tk.Entry(row, textvariable=var, width=10).pack(side="left")
-
-            tk.Label(row, text="%", bg=self.colors['white']).pack(side="left")
+        # Settings Card
+        self.settings_card = self.create_card(main_container, "💵 Tip-Out Settings")
+        self.build_settings_content()
         
-        # Status Card
-        status_card = self.create_card(main_container, "⚡ Processing Status")
+        # Action Card - Contains status, progress, and the big PROCESS button
+        action_card = self.create_card(main_container, "⚡ Process Payroll")
         
+        # Status
         self.status_var = tk.StringVar(value="Ready")
-        self.status_label = tk.Label(status_card, textvariable=self.status_var,
+        self.status_label = tk.Label(action_card, textvariable=self.status_var,
                                      font=self.fonts['normal'], bg=self.colors['white'],
                                      fg=self.colors['success'])
-        self.status_label.pack(pady=5)
+        self.status_label.pack(pady=2)
         
         # Progress bar
-        self.progress = ttk.Progressbar(status_card, mode='indeterminate', length=400)
-        self.progress.pack(pady=10)
+        self.progress = ttk.Progressbar(action_card, mode='indeterminate', length=400)
+        self.progress.pack(pady=3)
         
-        # Process Button
-        button_frame = tk.Frame(main_container, bg=self.colors['bg'])
-        button_frame.pack(pady=20)
+        # Process Button - BIG AND VISIBLE
+        button_frame = tk.Frame(action_card, bg=self.colors['white'])
+        button_frame.pack(pady=5)
         
         self.process_btn = tk.Button(button_frame, text="▶ PROCESS PAYROLL", 
                                      command=self.process_payroll,
-                                     font=self.fonts['button'],
+                                     font=('Helvetica', 13, 'bold'),
                                      bg=self.colors['secondary'], fg=self.colors['white'],
-                                     padx=30, pady=12, cursor="hand2",
-                                     relief=tk.RAISED, bd=2)
+                                     padx=50, pady=12, cursor="hand2",
+                                     relief=tk.RAISED, bd=3, width=22)
         self.process_btn.pack()
         
         # Footer
         footer = tk.Frame(main_container, bg=self.colors['bg'])
-        footer.pack(fill="x", pady=(20, 0))
-        tk.Label(footer, text="© 2025 Payroll Processor Pro | Version 1.0",
-                font=('Helvetica', 8), bg=self.colors['bg'], fg=self.colors['gray']).pack()
+        footer.pack(fill="x", pady=(5, 0))
+        tk.Label(footer, text="© 2025 Payroll Processor Pro | Select all files, choose mode, and click PROCESS PAYROLL",
+                font=('Helvetica', 7), bg=self.colors['bg'], fg=self.colors['gray']).pack()
+    
+    def build_settings_content(self):
+        """Build the settings content based on current mode"""
+        # Clear existing settings content
+        for widget in self.settings_card.winfo_children():
+            widget.destroy()
+        
+        # Tipout
+        tipout_frame = tk.Frame(self.settings_card, bg=self.colors['white'])
+        tipout_frame.pack(fill="x", pady=2)
+
+        tk.Label(tipout_frame, text="Server Tip-Out %:", width=16, anchor="w",
+                 bg=self.colors['white'], font=self.fonts['normal']).pack(side="left")
+
+        tk.Entry(tipout_frame, textvariable=self.tipout_var, width=8).pack(side="left")
+
+        tk.Label(tipout_frame, text="%", bg=self.colors['white'], 
+                font=self.fonts['normal']).pack(side="left", padx=3)
+
+        tk.Label(tipout_frame, text=f"Mode: {self.current_mode.upper()}", 
+                font=('Helvetica', 8, 'italic'),
+                bg=self.colors['white'],
+                fg=self.colors['maax'] if self.current_mode == "maax" else self.colors['tomahawk']).pack(side="right", padx=5)
+
+        # Roles
+        tk.Label(self.settings_card, text="Role Pool Percentages:",
+                 font=self.fonts['heading'],
+                 bg=self.colors['white']).pack(anchor="w", pady=(3, 2))
+
+        # Create a compact grid for roles
+        roles_frame = tk.Frame(self.settings_card, bg=self.colors['white'])
+        roles_frame.pack(fill="x")
+        
+        # Display roles
+        for i, (role, var) in enumerate(self.current_role_vars.items()):
+            row = tk.Frame(roles_frame, bg=self.colors['white'])
+            row.pack(fill="x", pady=1)
+
+            tk.Label(row, text=role, width=16, anchor="w",
+                     bg=self.colors['white'], font=self.fonts['normal']).pack(side="left")
+
+            tk.Entry(row, textvariable=var, width=8).pack(side="left")
+
+            tk.Label(row, text="%", bg=self.colors['white'], 
+                    font=self.fonts['normal']).pack(side="left", padx=2)
+    
+    def switch_mode(self, mode):
+        """Switch between MAAX and TOMAHAWK modes"""
+        self.current_mode = mode
+        
+        if mode == "maax":
+            self.current_role_vars = self.role_vars_maax
+            self.mode_indicator.config(text="Current: MAAX Mode", fg=self.colors['maax'])
+            self.maax_btn.config(bg=self.colors['maax'], fg='white')
+            self.tomahawk_btn.config(bg=self.colors['gray'], fg='white')
+        else:
+            self.current_role_vars = self.role_vars_tomahawk
+            self.mode_indicator.config(text="Current: TOMAHAWK Mode", fg=self.colors['tomahawk'])
+            self.tomahawk_btn.config(bg=self.colors['tomahawk'], fg='white')
+            self.maax_btn.config(bg=self.colors['gray'], fg='white')
+        
+        self.build_settings_content()
+        self.check_ready()
     
     def select_productivity(self):
         self.productivity_file = filedialog.askopenfilename(
@@ -716,7 +861,7 @@ class PayrollApp:
     def check_ready(self):
         if self.productivity_file and self.labor_file and self.timecard_file:
             self.process_btn.config(bg=self.colors['success'], state="normal")
-            self.status_var.set("All files selected. Ready to process!")
+            self.status_var.set(f"{self.current_mode.upper()} - All files selected. Ready to process!")
             self.status_label.config(fg=self.colors['success'])
         else:
             self.process_btn.config(bg=self.colors['secondary'], state="normal")
@@ -728,8 +873,8 @@ class PayrollApp:
             messagebox.showwarning("Missing Files", "Please select all three files before processing.")
             return
         
-        self.process_btn.config(state="disabled", bg=self.colors['gray'])
-        self.status_var.set("Processing payroll... Please wait")
+        self.process_btn.config(state="disabled", bg=self.colors['gray'], text="⏳ PROCESSING...")
+        self.status_var.set(f"Processing {self.current_mode.upper()} payroll... Please wait")
         self.status_label.config(fg=self.colors['warning'])
         self.progress.start()
         
@@ -740,7 +885,7 @@ class PayrollApp:
         try:
             percentages = {}
 
-            for role, var in self.role_vars.items():
+            for role, var in self.current_role_vars.items():
                 percentages[role] = float(var.get()) / 100
 
             tipout_percentage = float(self.tipout_var.get()) / 100
@@ -750,7 +895,8 @@ class PayrollApp:
                 self.labor_file,
                 self.timecard_file,
                 percentages=percentages,
-                tipout_percentage=tipout_percentage
+                tipout_percentage=tipout_percentage,
+                mode=self.current_mode
             )
 
             self.root.after(0, self.on_success, output_file)
@@ -760,12 +906,12 @@ class PayrollApp:
     
     def on_success(self, output_file):
         self.progress.stop()
-        self.status_var.set("Complete! Output saved to Downloads folder")
+        self.status_var.set(f"{self.current_mode.upper()} - Complete! Output saved to Downloads folder")
         self.status_label.config(fg=self.colors['success'])
-        self.process_btn.config(state="normal", bg=self.colors['success'])
+        self.process_btn.config(state="normal", bg=self.colors['success'], text="▶ PROCESS PAYROLL")
         
         result = messagebox.askyesno("✅ Success", 
-            f"Payroll processed successfully!\n\n📄 Output saved to:\n{output_file}\n\n📂 Open folder?")
+            f"{self.current_mode.upper()} Payroll processed successfully!\n\n📄 Output saved to:\n{output_file}\n\n📂 Open folder?")
         if result:
             os.startfile(Path(output_file).parent)
     
@@ -773,7 +919,7 @@ class PayrollApp:
         self.progress.stop()
         self.status_var.set(f"Error: {error_msg[:50]}...")
         self.status_label.config(fg=self.colors['danger'])
-        self.process_btn.config(state="normal", bg=self.colors['secondary'])
+        self.process_btn.config(state="normal", bg=self.colors['secondary'], text="▶ PROCESS PAYROLL")
         messagebox.showerror("❌ Processing Error", f"An error occurred:\n\n{error_msg}")
 
 if __name__ == "__main__":
