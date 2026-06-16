@@ -255,14 +255,16 @@ def process_payroll(
     merged['Final Pay'] = 0.0
     merged['Effective Hourly Rate'] = 0.0
 
+    # Calculate for base pay only roles (they get no tips)
     for idx, row in merged.iterrows():
         if get_base_pay_only(row['Role']):
             merged.at[idx, 'Final Pay'] = row['Estimated Total Pay']
             merged.at[idx, 'Effective Hourly Rate'] = row['Estimated Total Pay'] / row['Total Hours Worked'] if row['Total Hours Worked'] > 0 else 0
             merged.at[idx, 'Tip Out'] = 0
-            merged.at[idx, 'Service Tips'] = 0
+            merged.at[idx, 'Total Tips'] = 0
             merged.at[idx, 'Merchant Fee'] = 0
 
+    # Calculate for Servers (they tip out)
     server_mask = merged['Role'].str.contains('Server', case=False, na=False) & ~merged['Role'].str.contains('Trainee', case=False, na=False)
     
     merged.loc[server_mask, 'Tip Out'] = merged.loc[server_mask, 'Gross Sales'] * tipout_percentage
@@ -313,6 +315,7 @@ def process_payroll(
         else:
             hourly_tip_rates[role] = 0
 
+    # Calculate Tip-Out Tips for each role
     for idx, row in merged.iterrows():
         if get_base_pay_only(row['Role']):
             continue
@@ -342,20 +345,39 @@ def process_payroll(
             elif 'bartender' in employee_role:
                 merged.at[idx, 'Tip-Out Tips'] = hourly_tip_rates['Bartender'] * row['Total Hours Worked']
 
+    # Calculate Final Pay for each employee
     for idx, row in merged.iterrows():
         if get_base_pay_only(row['Role']):
             continue
             
         role = str(row['Role']).lower()
         
-        if 'bartender' in role:
-            bartender_merchant_fee = row['Service Tips'] * 0.03
-            final_pay = row['Estimated Total Pay'] + row['Service Tips'] - bartender_merchant_fee + row['Tip-Out Tips']
-        else:
-            final_pay = row['Estimated Total Pay'] + row['Tip-Out Tips']
-        
+        # Calculate Total Tips for all roles (they receive Tip-Out Tips)
+        # For non-servers, Total Tips = Tip-Out Tips (they don't have service tips)
         if 'server' in role and 'trainee' not in role:
-            final_pay += row['Total Tips']
+            # Servers already have Total Tips calculated from service tips
+            # They also get Tip-Out Tips
+            merged.at[idx, 'Total Tips'] = row['Total Tips']  # Keep existing Total Tips from service tips
+        else:
+            # For all other roles, Total Tips = Tip-Out Tips
+            merged.at[idx, 'Total Tips'] = row['Tip-Out Tips']
+        
+        # Calculate Merchant Fee for Bartenders (on their own service tips)
+        if 'bartender' in role:
+            # Bartender gets their own service tips with merchant fee deducted
+            bartender_merchant_fee = row['Service Tips'] * 0.03
+            # The bartender's tip-out tips are added (from the pool)
+            final_pay = row['Estimated Total Pay'] + row['Service Tips'] - bartender_merchant_fee + row['Tip-Out Tips']
+            # Store the bartender's merchant fee separately
+            merged.at[idx, 'Merchant Fee'] = bartender_merchant_fee
+            # Bartender's Total Tips = Service Tips - Merchant Fee + Tip-Out Tips
+            merged.at[idx, 'Total Tips'] = row['Service Tips'] - bartender_merchant_fee + row['Tip-Out Tips']
+        else:
+            # For everyone else: Estimated Total Pay + Tip-Out Tips
+            final_pay = row['Estimated Total Pay'] + row['Tip-Out Tips']
+            # For servers, add their Total Tips (already calculated)
+            if 'server' in role and 'trainee' not in role:
+                final_pay += row['Total Tips']
         
         merged.at[idx, 'Final Pay'] = final_pay
         
@@ -364,7 +386,7 @@ def process_payroll(
 
     numeric_cols = ['Gross Sales', 'Net Sales', 'Service Tips', 'Tip Out', 'Gross Tips', 'Merchant Fee', 
                     'Total Tips', 'Subtotal', 'Tip-Out Tips', 'Final Pay', 'Effective Hourly Rate',
-                    'Raw Hours', 'No. of Breaks', 'Total Break Time']
+                    'Raw Hours', 'No. of Breaks', 'Total Break Time', 'Total Hours Worked']
     for col in numeric_cols:
         if col in merged.columns:
             merged[col] = merged[col].round(2)
@@ -372,7 +394,7 @@ def process_payroll(
     output_columns = [
         'Name', 'Role', 'Hourly Rate', 'Raw Hours', 'No. of Breaks', 'Total Break Time',
         'Total Hours Worked', 'Estimated Total Pay', 'Gross Sales', 'Net Sales', 'Service Tips',
-        'Tip Out', 'Tip-Out Tips', 'Merchant Fee', 'Final Pay', 'Effective Hourly Rate'
+        'Tip Out', 'Gross Tips', 'Merchant Fee', 'Total Tips', 'Tip-Out Tips', 'Final Pay', 'Effective Hourly Rate'
     ]
     
     output_columns = [col for col in output_columns if col in merged.columns]
@@ -435,7 +457,8 @@ def process_payroll(
             total_row['Role'] = 'Server'
             
             sum_cols = ['Raw Hours', 'Total Break Time', 'Total Hours Worked', 'Estimated Total Pay', 
-                       'Gross Sales', 'Net Sales', 'Service Tips', 'Tip Out', 'Tip-Out Tips', 'Merchant Fee', 'Final Pay']
+                       'Gross Sales', 'Net Sales', 'Service Tips', 'Tip Out', 'Gross Tips',
+                       'Merchant Fee', 'Total Tips', 'Tip-Out Tips', 'Final Pay']
             
             for col in sum_cols:
                 if col in server_rows.columns:
@@ -462,7 +485,8 @@ def process_payroll(
     grand_total_row['Role'] = 'All Sections'
     
     sum_cols = ['Raw Hours', 'Total Break Time', 'Total Hours Worked', 'Estimated Total Pay', 
-               'Gross Sales', 'Net Sales', 'Service Tips', 'Tip Out', 'Tip-Out Tips', 'Merchant Fee', 'Final Pay']
+               'Gross Sales', 'Net Sales', 'Service Tips', 'Tip Out', 'Gross Tips',
+               'Merchant Fee', 'Total Tips', 'Tip-Out Tips', 'Final Pay']
     
     for col in sum_cols:
         if col in employee_rows.columns:
