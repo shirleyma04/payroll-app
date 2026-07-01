@@ -302,11 +302,11 @@ class PayrollProcessor:
                     # Gross Tips = Service Tips + Tip-Out Tips
                     role_df['Gross Tips'] = role_df['Service Tips'] + role_df['Tip-Out Tips']
                     
-                    # Merchant Fee = Service Tips * 0.03 (only on Service Tips, not on Tip-Out Tips)
-                    role_df['Merchant Fee'] = role_df['Service Tips'] * 0.03
+                    # Merchant Fee = Gross Tips * 0.03
+                    role_df['Merchant Fee'] = role_df['Gross Tips'] * 0.03
                     
-                    # Total Tips = Service Tips - Merchant Fee + Tip-Out Tips
-                    role_df['Total Tips'] = role_df['Service Tips'] - role_df['Merchant Fee'] + role_df['Tip-Out Tips']
+                    # Total Tips = Gross Tips - Merchant Fee
+                    role_df['Total Tips'] = role_df['Gross Tips'] - role_df['Merchant Fee']
                     
                     # Tip Out = 0 (bartenders don't tip out)
                     role_df['Tip Out'] = 0
@@ -341,11 +341,14 @@ class PayrollProcessor:
                     else:
                         role_df['Tip-Out Tips'] = 0
                     
-                    # NO merchant fee for these roles
-                    role_df['Merchant Fee'] = 0
+                    # Gross Tips = Tip-Out Tips
+                    role_df['Gross Tips'] = role_df['Tip-Out Tips']
                     
-                    # Everyone's total tips are equal to their Tip-Out Tips
-                    role_df['Total Tips'] = role_df['Tip-Out Tips']
+                    # Merchant Fee = Gross Tips * 0.03
+                    role_df['Merchant Fee'] = role_df['Gross Tips'] * 0.03
+                    
+                    # Total Tips = Gross Tips - Merchant Fee
+                    role_df['Total Tips'] = role_df['Gross Tips'] - role_df['Merchant Fee']
                     
                     role_df['Estimated Total Pay'] = role_df['Total Hours Worked (h)'] * role_df['Hourly Rate']
                     role_df['No. of Breaks'] = role_df['break_count'].fillna(0)
@@ -353,7 +356,6 @@ class PayrollProcessor:
                     role_df['Gross Sales'] = 0
                     role_df['Net Sales'] = 0
                     role_df['Service Tips'] = 0
-                    role_df['Gross Tips'] = 0
                     role_df['Tip Out'] = 0
                     
                 else:
