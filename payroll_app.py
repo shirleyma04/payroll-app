@@ -33,12 +33,14 @@ class PayrollProcessor:
                 "Cashier/Host": 0.03,
                 "Bartender": 0.025
             }
-        else:
+            self.tipout_percentage = 0.07  # MAAX tipout is 7%
+        else:  # Tomahawk
             self.default_percentages = {
                 "Busser": 0.42,
                 "Cashier/Host": 0.03,
                 "Bartender": 0.025
             }
+            self.tipout_percentage = 0.05  # Tomahawk tipout is 5%
         
         self.percentages = self.default_percentages.copy()
         
@@ -122,45 +124,114 @@ class PayrollProcessor:
             raise Exception(f"Error loading timecard data: {str(e)}")
 
     def calculate_breaks(self, timecard_data):
+        """
+        Calculate break information based on the specified logic.
+        Goes through each row of the Time Card file and applies break logic.
+        Aggregates break information per person (name + role).
+        
+        For each row:
+        1. If Time Card already has a value in 'Unpaid Break (h)', count the break time and count as a break
+        2. Else if Clock In < 1:00PM AND Clock Out > 9:00PM, subtract 1.0 hours (double shift) and count as 1 break
+        3. Else subtract 0.5 hours (single shift) and count as 1 break
+        4. If total hours < 3 hours, don't subtract any break and don't count it
+        """
         break_summary = {}
         
-        for _, row in timecard_data.iterrows():
+        # Iterate through each row of the timecard
+        for index, row in timecard_data.iterrows():
             name = row['Name']
             role = row['Role']
-            
-            has_break_data = (pd.notna(row.get('Break Start', '')) and 
-                            pd.notna(row.get('Break End', '')))
-            
-            if has_break_data:
-                break_start = row['Break Start']
-                break_end = row['Break End']
-                if pd.notna(break_start) and pd.notna(break_end):
-                    start_time = pd.to_datetime(break_start)
-                    end_time = pd.to_datetime(break_end)
-                    break_minutes = (end_time - start_time).total_seconds() / 60
-                else:
-                    break_minutes = 0
-            else:
-                clock_in = pd.to_datetime(row['Clock In'])
-                clock_out = pd.to_datetime(row['Clock Out'])
-                total_hours = (clock_out - clock_in).total_seconds() / 3600
-                
-                if total_hours < 3:
-                    break_minutes = 0
-                elif clock_in.hour < 13 and clock_out.hour >= 21:
-                    break_minutes = 40
-                else:
-                    break_minutes = 20
-            
             key = f"{name}_{role}"
-            if key not in break_summary:
-                break_summary[key] = {'break_count': 0, 'total_break_minutes': 0}
             
-            if break_minutes > 0:
-                break_summary[key]['break_count'] += 1
-                break_summary[key]['total_break_minutes'] += break_minutes
+            # Initialize the summary for this person if not exists
+            if key not in break_summary:
+                break_summary[key] = {
+                    'Name': name,
+                    'Role': role,
+                    'break_count': 0,  # Counts ALL breaks (from timecard + program added)
+                    'total_break_minutes': 0,
+                    'total_break_hours': 0,
+                    'has_unpaid_break': False,
+                    'days_without_break': 0,
+                    'days_with_break': 0  # Track days with breaks in timecard
+                }
+            
+            # Check if Unpaid Break (h) already has a value
+            has_unpaid_break = False
+            unpaid_break_hours = 0
+            if 'Unpaid Break (h)' in row:
+                unpaid_break_value = row.get('Unpaid Break (h)', '')
+                # Check if it has a valid value (not NaN and not empty)
+                if pd.notna(unpaid_break_value) and str(unpaid_break_value).strip() != '':
+                    has_unpaid_break = True
+                    break_summary[key]['has_unpaid_break'] = True
+                    
+                    # Get the break time from the timecard
+                    try:
+                        unpaid_break_hours = float(unpaid_break_value)
+                    except:
+                        unpaid_break_hours = 0
+                    
+                    # Count this as a break from the timecard
+                    break_summary[key]['break_count'] += 1
+                    break_summary[key]['days_with_break'] += 1
+                    
+                    # Add the break time from the timecard to total break time
+                    break_summary[key]['total_break_minutes'] += unpaid_break_hours * 60
+                    break_summary[key]['total_break_hours'] += unpaid_break_hours
+            
+            # Calculate total hours worked from the timecard
+            clock_in = pd.to_datetime(row['Clock In'])
+            clock_out = pd.to_datetime(row['Clock Out'])
+            total_hours = (clock_out - clock_in).total_seconds() / 3600
+            
+            # Determine break minutes for subtraction (only if no unpaid break)
+            if has_unpaid_break:
+                # If Unpaid Break (h) exists, no additional subtraction needed
+                # The break time is already counted above
+                break_minutes = 0
+            else:
+                # No Unpaid Break (h) - apply the logic for subtraction
+                if total_hours < 3:
+                    # Less than 3 hours, no break
+                    break_minutes = 0
+                else:
+                    # Get hours in decimal format (hours + minutes/60)
+                    clock_in_hour = clock_in.hour + clock_in.minute / 60.0
+                    clock_out_hour = clock_out.hour + clock_out.minute / 60.0
+                    
+                    # Check if it's a double shift (clock in before 1PM, clock out after 9PM)
+                    if clock_in_hour < 13.0 and clock_out_hour > 21.0:
+                        # Double shift: subtract 1.0 hours (60 minutes)
+                        break_minutes = 60
+                    else:
+                        # Single shift: subtract 0.5 hours (30 minutes)
+                        break_minutes = 30
+                    
+                    # Count this as a break added by the program
+                    break_summary[key]['break_count'] += 1
+                    break_summary[key]['days_without_break'] += 1
+                    
+                    # Add the program-added break time to total break time
+                    break_hours = break_minutes / 60
+                    break_summary[key]['total_break_minutes'] += break_minutes
+                    break_summary[key]['total_break_hours'] += break_hours
         
-        return break_summary
+        # Create summary dataframe
+        summary_list = []
+        for key, value in break_summary.items():
+            summary_list.append({
+                'Name': value['Name'],
+                'Role': value['Role'],
+                'break_count': value['break_count'],  # Total breaks (timecard + program added)
+                'total_break_minutes': round(value['total_break_minutes'], 2),
+                'total_break_hours': round(value['total_break_hours'], 2),
+                'days_without_break': value['days_without_break'],
+                'days_with_break': value['days_with_break'],
+                'has_unpaid_break': value['has_unpaid_break']
+            })
+        
+        return pd.DataFrame(summary_list)
 
     def process_payroll(self):
         if self.labor_data is None or self.productivity_data is None or self.timecard_data is None:
@@ -174,17 +245,7 @@ class PayrollProcessor:
                 self.timecard_data.copy()
             )
             
-            break_summary = self.calculate_breaks(timecard_df)
-            
-            break_df = pd.DataFrame([
-                {
-                    'Name': key.split('_')[0],
-                    'Role': key.split('_')[1],
-                    'break_count': value['break_count'],
-                    'total_break_minutes': value['total_break_minutes']
-                }
-                for key, value in break_summary.items()
-            ])
+            break_df = self.calculate_breaks(timecard_df)
             
             # Create normalized name for break_df
             break_df['Normalized_Name'] = break_df['Name'].apply(self.normalize_name)
@@ -229,12 +290,46 @@ class PayrollProcessor:
                     role_df['Gross Sales'] = role_df['Gross Sales'].fillna(0)
                     role_df['Service Tips'] = role_df['Service Tips'].fillna(0)
                     
-                    role_df['Tip Out'] = role_df['Gross Sales'] * 0.07
+                    # Use the appropriate tipout percentage based on mode
+                    role_df['Tip Out'] = role_df['Gross Sales'] * self.tipout_percentage
                     tip_pool += role_df['Tip Out'].sum()
             
             # Second pass: Process all roles with the calculated tip pool
             for role in roles:
                 role_df = labor_df[labor_df['Role'] == role].copy()
+                
+                # Merge with break data for all roles
+                role_df = role_df.merge(
+                    break_df[['Match_Key', 'break_count', 'total_break_minutes', 'total_break_hours', 
+                              'days_without_break', 'days_with_break', 'has_unpaid_break']],
+                    on=['Match_Key'],
+                    how='left'
+                )
+                
+                # Fill NaN values for break data
+                role_df['break_count'] = role_df['break_count'].fillna(0)
+                role_df['total_break_minutes'] = role_df['total_break_minutes'].fillna(0)
+                role_df['total_break_hours'] = role_df['total_break_hours'].fillna(0)
+                role_df['days_without_break'] = role_df['days_without_break'].fillna(0)
+                role_df['days_with_break'] = role_df['days_with_break'].fillna(0)
+                role_df['has_unpaid_break'] = role_df['has_unpaid_break'].fillna(False)
+                
+                # Store Regular Hours as the original value
+                role_df['Regular Hours Original'] = role_df['Regular Hours (h)'].copy()
+                
+                # Subtract break hours from Regular Hours to get Total Hours Worked
+                role_df['Break Hours'] = role_df['total_break_hours']
+                
+                # Total Hours Worked = Regular Hours - Break Hours (only subtract program-added breaks)
+                # Note: The break hours from the timecard are already accounted for in Regular Hours
+                # So we only subtract the program-added breaks (which are already in Break Hours)
+                role_df['Total Hours Worked (h)'] = role_df['Regular Hours Original'] - role_df['Break Hours']
+                
+                # Ensure Total Hours Worked doesn't go negative
+                role_df['Total Hours Worked (h)'] = role_df['Total Hours Worked (h)'].clip(lower=0)
+                
+                # Round to 2 decimal places
+                role_df['Total Hours Worked (h)'] = role_df['Total Hours Worked (h)'].round(2)
                 
                 if role == 'Server':
                     # Merge with productivity data using Match_Key
@@ -244,26 +339,20 @@ class PayrollProcessor:
                         on=['Match_Key'],
                         how='left'
                     )
-                    # Merge with break data
-                    role_df = role_df.merge(
-                        break_df[['Match_Key', 'break_count', 'total_break_minutes']],
-                        on=['Match_Key'],
-                        how='left'
-                    )
                     
                     role_df['Gross Sales'] = role_df['Gross Sales'].fillna(0)
                     role_df['Service Tips'] = role_df['Service Tips'].fillna(0)
                     
-                    role_df['Tip Out'] = role_df['Gross Sales'] * 0.07
+                    # Use the appropriate tipout percentage based on mode
+                    role_df['Tip Out'] = role_df['Gross Sales'] * self.tipout_percentage
                     role_df['Tip-Out Tips'] = 0
                     role_df['Gross Tips'] = role_df['Service Tips'] - role_df['Tip Out']
                     role_df['Merchant Fee'] = role_df['Gross Tips'] * 0.03
                     role_df['Total Tips'] = role_df['Service Tips'] - role_df['Tip Out'] - role_df['Merchant Fee']
                     
                     role_df['Estimated Total Pay'] = role_df['Total Hours Worked (h)'] * role_df['Hourly Rate']
-                    role_df['No. of Breaks'] = role_df['break_count'].fillna(0)
-                    # Convert break minutes to hours (divide by 60)
-                    role_df['Total Break Time'] = (role_df['total_break_minutes'].fillna(0) / 60).round(2)
+                    role_df['No. of Breaks'] = role_df['break_count']
+                    role_df['Total Break Time'] = role_df['Break Hours'].round(2)
                     role_df['Net Sales'] = role_df['Net Sales'].fillna(0)
                     
                 elif role == 'Bartender':
@@ -271,11 +360,6 @@ class PayrollProcessor:
                     prod_data = productivity_df[productivity_df['Role'] == 'Bartender']
                     role_df = role_df.merge(
                         prod_data[['Match_Key', 'Service Tips']],
-                        on=['Match_Key'],
-                        how='left'
-                    )
-                    role_df = role_df.merge(
-                        break_df[['Match_Key', 'break_count', 'total_break_minutes']],
                         on=['Match_Key'],
                         how='left'
                     )
@@ -312,18 +396,12 @@ class PayrollProcessor:
                     role_df['Tip Out'] = 0
                     
                     role_df['Estimated Total Pay'] = role_df['Total Hours Worked (h)'] * role_df['Hourly Rate']
-                    role_df['No. of Breaks'] = role_df['break_count'].fillna(0)
-                    role_df['Total Break Time'] = (role_df['total_break_minutes'].fillna(0) / 60).round(2)
+                    role_df['No. of Breaks'] = role_df['break_count']
+                    role_df['Total Break Time'] = role_df['Break Hours'].round(2)
                     role_df['Gross Sales'] = 0
                     role_df['Net Sales'] = 0
                     
                 elif role in ['Busser', 'Food Runner', 'Food-Bar Runner', 'Food-Bar Prep', 'Cashier/Host']:
-                    role_df = role_df.merge(
-                        break_df[['Match_Key', 'break_count', 'total_break_minutes']],
-                        on=['Match_Key'],
-                        how='left'
-                    )
-                    
                     # Get the total percentage for this role
                     role_pct = self.percentages.get(role, 0)
                     # Calculate total pool money for this role
@@ -351,8 +429,8 @@ class PayrollProcessor:
                     role_df['Total Tips'] = role_df['Gross Tips'] - role_df['Merchant Fee']
                     
                     role_df['Estimated Total Pay'] = role_df['Total Hours Worked (h)'] * role_df['Hourly Rate']
-                    role_df['No. of Breaks'] = role_df['break_count'].fillna(0)
-                    role_df['Total Break Time'] = (role_df['total_break_minutes'].fillna(0) / 60).round(2)
+                    role_df['No. of Breaks'] = role_df['break_count']
+                    role_df['Total Break Time'] = role_df['Break Hours'].round(2)
                     role_df['Gross Sales'] = 0
                     role_df['Net Sales'] = 0
                     role_df['Service Tips'] = 0
@@ -360,15 +438,9 @@ class PayrollProcessor:
                     
                 else:
                     # Non-tipped roles (trainees, dishwashers, prep cooks)
-                    role_df = role_df.merge(
-                        break_df[['Match_Key', 'break_count', 'total_break_minutes']],
-                        on=['Match_Key'],
-                        how='left'
-                    )
-                    
                     role_df['Estimated Total Pay'] = role_df['Total Hours Worked (h)'] * role_df['Hourly Rate']
-                    role_df['No. of Breaks'] = role_df['break_count'].fillna(0)
-                    role_df['Total Break Time'] = (role_df['total_break_minutes'].fillna(0) / 60).round(2)
+                    role_df['No. of Breaks'] = role_df['break_count']
+                    role_df['Total Break Time'] = role_df['Break Hours'].round(2)
                     role_df['Gross Sales'] = 0
                     role_df['Net Sales'] = 0
                     role_df['Service Tips'] = 0
@@ -377,6 +449,9 @@ class PayrollProcessor:
                     role_df['Gross Tips'] = 0
                     role_df['Merchant Fee'] = 0
                     role_df['Total Tips'] = 0
+                
+                # Drop the temporary columns
+                role_df = role_df.drop(['Regular Hours Original', 'Break Hours'], axis=1, errors='ignore')
                 
                 # Keep only the original columns plus new ones
                 processed_dfs.append(role_df)
@@ -718,7 +793,7 @@ class PayrollApp:
         if mode == "MAAX":
             roles = ["Busser", "Food Runner", "Food-Bar Runner", "Food-Bar Prep", "Cashier/Host", "Bartender"]
             defaults = [42.0, 19.0, 29.0, 4.5, 3.0, 2.5]
-        else:
+        else:  # Tomahawk
             roles = ["Busser", "Cashier/Host", "Bartender"]
             defaults = [42.0, 3.0, 2.5]
         
@@ -747,6 +822,11 @@ class PayrollApp:
         if self.processor:
             self.processor.mode = mode
             self.processor.percentages = self.processor.default_percentages.copy()
+            # Update tipout percentage based on mode
+            if mode == "MAAX":
+                self.processor.tipout_percentage = 0.07
+            else:  # Tomahawk
+                self.processor.tipout_percentage = 0.05
     
     def load_file(self, file_type):
         """Load a file based on type"""
